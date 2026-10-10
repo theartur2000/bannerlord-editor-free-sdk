@@ -28,6 +28,19 @@ SPAWN = 235.0                 # the armies start this far from the middle
 KINDS = ("ridge", "valley", "hill", "crossing", "clearing", "pass", "bluff", "broken", "mesa")
 TEMPLATES = {"Plain": "battle_terrain_a", "Desert": "battle_terrain_b", "Steppe": "battle_terrain_c"}
 SKIP_ROCKS = ("far", "bridge", "heap", "top", "ambush", "wall")   # scenery for the distance, buildings, and pieces with special uses
+# What each rock is, from looking at every one alone on flat ground in the game (demos/battlefields/lineup.py):
+#   wall     wide layered outcrops: the faces of steep ground
+#   tower    tall narrow blocks: only on steep ground, sunk deep, or they stand like monoliths
+#   boulder  rounded boulders and small stones: the rocks that lie out in the open and below cliffs
+#   slab     low wide slabs and earth ledges: outcrops on gentle ground
+ROCK_KIND = (("terrain_green_rock", "boulder"), ("cave_rock", "boulder"), ("rock_cliff_d", "slab"), ("cliff_soil", "slab"),
+             ("rock_cliff_c", "tower"), ("rock_desert_cliff", "tower"), ("rock_cliff_a", "wall"), ("rock_cliff_b", "wall"))
+
+
+def rock_kind(name):
+    for key, kind in ROCK_KIND:
+        if name.startswith(key): return kind
+    return "wall"
 
 
 class Rules:
@@ -178,6 +191,10 @@ def design(rules, kind=None, seed=None, log=print):
             x, y = pt(u, v); z += F.hill(x, y, uni(90, 160), uni(16, 30), plateau=uni(0.55, 0.7), sharp=3.0, wobble=0.55); made += 1
             if math.hypot(u, v) < 300: feats.append(("high", x, y, 35, axis))
 
+    # bend the drawn landforms: no round hills, no straight ridges (domain warping)
+    wx = 42.0 * terraform.noise(F.shape, cell, 270.0, rng) + 14.0 * terraform.noise(F.shape, cell, 90.0, rng)
+    wy = 42.0 * terraform.noise(F.shape, cell, 270.0, rng) + 14.0 * terraform.noise(F.shape, cell, 90.0, rng)
+    z = terraform.warp(z, wx, wy, cell)
     # the frame: hills or mountains around the play area, by how rugged the land is (none out at sea)
     frame = smoothstep(rr * (1 + 0.12 * F.wobble(300.0)), 400, 590) * (12 + 95 * r) * (0.55 + 0.45 * terraform.fbm(F.shape, cell, 380.0, 4, rng, ridged=True, erode=0.5))
     if sea is not None:
@@ -200,11 +217,25 @@ def design(rules, kind=None, seed=None, log=print):
     calm = 1.0
     if sea is not None: calm = smoothstep(dshore, 10, 80)
     z = z + (0.5 + 0.9 * r) * mid.synthesize(F.shape, seed + 1, patch=260.0) * calm
+    # running water: gullies and valleys where the flow gathers, ridges between them; then scree under the steepest faces
+    z0e = z
+    z, drain = terraform.erode_fluvial(z, cell, strength=4.0 + 6.0 * r, iterations=9, rng=rng)
+    if sea is not None: z = z0e + (z - z0e) * calm
+    if r > 0.5 or kind in ("pass", "mesa"): z = terraform.erode_thermal(z, cell, talus=1.15, iterations=14)
     z = z + (fine.apply(z, seed + 2) - z) * calm
     # level ground where the armies deploy
     zb = terraform.blur_fast(z, 22.0 / cell)
     for sgn in (-1, 1):
         x, y = pt(sgn * SPAWN, 0); w = 0.75 * (1 - smoothstep(F.dist(x, y), 35, 90)); z = z * (1 - w) + zb * w
+
+    moved = []
+    for typ, x, y, rad, face in feats:
+        if typ == "high":
+            j0, j1 = int(max(0, (y - 60) / cell)), int(min(N, (y + 60) / cell)); i0, i1 = int(max(0, (x - 60) / cell)), int(min(N, (x + 60) / cell))
+            if j1 > j0 and i1 > i0:
+                jj, ii = np.unravel_index(int(np.argmax(zb[j0:j1, i0:i1])), (j1 - j0, i1 - i0)); x, y = (i0 + ii) * cell, (j0 + jj) * cell
+        moved.append((typ, x, y, rad, face))
+    feats = moved
 
     # water
     level = None; under = np.zeros(F.shape, bool); deep = np.zeros(F.shape, bool)
@@ -240,8 +271,10 @@ def design(rules, kind=None, seed=None, log=print):
     flat = 1 - smoothstep(sl, 0.25, 0.5)
     for k, i in enumerate(roles.get("grass", [])):
         masks[i] = m8(smoothstep(terraform.noise(F.shape, cell, (90.0, 45.0, 160.0, 60.0)[k % 4], rng), 0.05, 0.5) * flat)
+    # where water gathers on sloping ground: bare earth and gravel in the gullies (not on the flats, where a drainage line means nothing)
+    runoff = smoothstep(terraform.blur_fast(np.log10(np.maximum(drain, 1.0)), 2.5 / cell), 3.6, 4.5) * smoothstep(sl, 0.07, 0.16) * (1 - smoothstep(sl, 0.5, 0.8))
     for k, i in enumerate(roles.get("soil", [])):
-        a = smoothstep(-curve, 0.25, 0.9) * smoothstep(sl, 0.08, 0.25) if k == 0 else np.maximum(smoothstep(-curve, 0.6, 1.6), smoothstep(wetground, 0.15, 0.6))
+        a = np.maximum(smoothstep(-curve, 0.25, 0.9) * smoothstep(sl, 0.08, 0.25), 0.8 * runoff) if k == 0 else np.maximum(smoothstep(-curve, 0.6, 1.6), smoothstep(wetground, 0.15, 0.6))
         if k == 0 and len(roles.get("soil", [])) == 1: a = np.maximum(a, smoothstep(wetground, 0.15, 0.6))
         masks[i] = m8(a)
     for k, i in enumerate(roles.get("rock", [])):
@@ -269,38 +302,63 @@ def design(rules, kind=None, seed=None, log=print):
     # and how tilted comes from how the shipped battlefields of this biome use each one (catalog.rock_usage).
     usage = catalog.rock_usage().get(rules.biome) or catalog.rock_usage().get("Plain", {})
     usage = {k: v for k, v in usage.items() if v["n"] >= 10 and not any(w in k for w in SKIP_ROCKS)}
-    cliffs = [k for k, v in usage.items() if v["slope"] >= 0.4] or list(usage)
-    lumps = [k for k, v in usage.items() if v["slope"] < 0.4] or cliffs
+    if rules.biome == "Plain": usage = {k: v for k, v in usage.items() if "desert" not in k}      # sand-coloured rock in a green field
+    kinds = {}
+    for k in usage: kinds.setdefault(rock_kind(k), []).append(k)
+    walls = kinds.get("wall") or list(usage)
+    towers = kinds.get("tower") or walls
+    boulders = kinds.get("boulder") or kinds.get("slab") or walls
+    slabs = kinds.get("slab") or boulders
     def pick(names):
         w = np.array([usage[k]["n"] for k in names], float); return names[int(rng.choice(len(names), p=w / w.sum()))]
     def at(a, x, y): return a[min(N - 1, max(0, int(round(y / cell)))), min(N - 1, max(0, int(round(x / cell))))]
     spawn_pts = [pt(-SPAWN, 0), pt(SPAWN, 0)]
     def clear(x, y, d=75.0): return all(math.hypot(x - sx, y - sy) > d for sx, sy in spawn_pts)
     spots = []
-    step = 26.0
-    for gy in np.arange(30.0, FIELD - 30.0, step):
-        for gx in np.arange(30.0, FIELD - 30.0, step):
-            x = gx + uni(-9, 9); y = gy + uni(-9, 9)
-            if math.hypot(x - C, y - C) > 545 or not clear(x, y) or at(under, x, y): continue
-            if float(at(sl, x, y)) > 0.45 and rng.random() < 0.8: spots.append((x, y, "cliff"))
+    steep = sl > 0.45
+    gy_, gx_ = np.gradient(terraform.blur_fast(z, 3.0 / cell), cell)
+    near_cliff = terraform.blur_fast(steep.astype(np.float64), 14.0 / cell)
+    def usable(x, y, reach=545.0): return math.hypot(x - C, y - C) < reach and clear(x, y) and not at(under, x, y)
+    for x, y in terraform.poisson(FIELD, 17.0, rng, lambda x, y: usable(x, y) and bool(at(steep, x, y))): spots.append((x, y, "cliff"))
+    for x, y in terraform.poisson(FIELD, 11.0, rng, lambda x, y: usable(x, y, 420.0) and not at(steep, x, y) and 0.12 < float(at(near_cliff, x, y)) < 0.5):
+        if rng.random() < 0.35: spots.append((x, y, "scree"))
     for f in feats:
         if f[0] != "high": continue
-        for _ in range(int(rng.integers(1, 4))):
-            a = uni(0, 6.28); d = uni(6, f[3]); x, y = f[1] + d * math.cos(a), f[2] + d * math.sin(a)
-            if clear(x, y) and not at(under, x, y): spots.append((x, y, "lump"))
-    for _ in range(int(6 + 16 * r)):
-        a = uni(0, 6.28); d = uni(40, 400); x, y = C + d * math.cos(a), C + d * math.sin(a)
-        if clear(x, y) and not at(under, x, y) and float(at(sl, x, y)) < 0.4: spots.append((x, y, "lump"))
-    if len(spots) > 90: spots = [spots[i] for i in sorted(rng.choice(len(spots), 90, replace=False))]
+        for _ in range(int(rng.integers(1, 3))):
+            a = uni(0, 6.28); d = uni(4, f[3] * 0.6); x, y = f[1] + d * math.cos(a), f[2] + d * math.sin(a)
+            if usable(x, y): spots.append((x, y, "lump"))
+    lumps_pts = terraform.poisson(FIELD, 70.0, rng, lambda x, y: usable(x, y, 400.0) and float(at(sl, x, y)) < 0.35)
+    for x, y in lumps_pts[:int(4 + 10 * r)]: spots.append((x, y, "lump"))
+    if len(spots) > 110:
+        keep = [q for q in spots if q[2] != "scree"]; rest = [q for q in spots if q[2] == "scree"]
+        if len(keep) > 110: keep = [keep[k] for k in sorted(rng.choice(len(keep), 110, replace=False))]
+        spots = keep + rest[:max(0, 110 - len(keep))]
     entities = []; blocked = np.zeros(F.shape, bool); rocks = []
+    def backed(x, y):
+        """Is there higher ground behind a cliff face standing here? On a crest or a narrow spur its open back is in the sky."""
+        gx0, gy0 = float(at(gx_, x, y)), float(at(gy_, x, y)); L = math.hypot(gx0, gy0)
+        if L < 0.3: return False
+        ux, uy = gx0 / L, gy0 / L; h0 = float(at(z, x, y)); h1 = float(at(z, x + 10 * ux, y + 10 * uy)); h2 = float(at(z, x + 20 * ux, y + 20 * uy))
+        return h1 - h0 > 3.5 and h2 - h1 > 1.0
     for x, y, why in spots:
-        name = pick(cliffs if why == "cliff" else lumps); u = usage[name]
+        if why == "cliff": name = pick(towers if rng.random() < 0.12 else walls)
+        elif why == "scree": name = pick(boulders)
+        else: name = pick(slabs if rng.random() < 0.3 and float(at(sl, x, y)) < 0.18 else boulders)     # a slab is a thin plate: only where it can lie flat
+        u = usage[name]; kind = rock_kind(name)
+        if u.get("facing_r", 0.0) > 0.65 and not backed(x, y): continue
         sc = u["scale"] * uni(0.85, 1.15) if rng.random() < 0.85 else uni(u["scale"], max(u["scale"], u["scale_hi"]))
         sink = uni(u["dz_lo"], min(0.2, u["dz_hi"])) if u["dz_lo"] < min(0.2, u["dz_hi"]) else min(0.0, u["dz"])
-        if why == "lump": sink = min(sink, u["dz"]) - 0.6 * sc                # a free-standing rock shows less of itself
-        tilt = min(0.6, u["tilt"])
-        entities.append({"prefab": name, "position": (x, y, float(at(z, x, y)) + sink),
-                         "rotation": (uni(-tilt, tilt) / 2, uni(-tilt, tilt) / 2, uni(-3.14, 3.14)), "scale": (sc, sc, sc)})
+        if kind == "tower": sink = min(sink, -3.0 * sc)                                       # a tower shows its top third at most
+        if why == "lump":                                                                   # a rock out in the open: a boulder or a slab, part of it in the ground
+            sc *= uni(0.45, 0.85) if kind == "boulder" and u["scale"] > 0.8 else uni(0.8, 1.2)
+            sink = -(0.5 + 0.9 * sc) if kind == "boulder" else min(sink, -0.8)
+        if why == "scree": sc *= uni(0.25, 0.45) if u["scale"] > 0.8 else uni(0.8, 1.3); sink = -0.5 * sc   # fallen blocks below a cliff
+        tilt = 0.0 if kind == "slab" else 0.1 if kind == "tower" else min(0.5, u["tilt"])     # a tilted plate or tower sticks out of a slope like a claw
+        rot = (uni(-tilt, tilt) / 2, uni(-tilt, tilt) / 2, uni(-3.14, 3.14))
+        if u.get("facing_r", 0.0) > 0.65:      # a one-sided cliff face: turned the way the shipped scenes turn it on a slope, or its open back shows
+            down = math.atan2(-float(at(gy_, x, y)), -float(at(gx_, x, y)))
+            rot = (u["lean"] * uni(0.5, 1.3), uni(-0.04, 0.04), down + math.radians(u["facing"]) + float(rng.normal(0.0, 0.25)))
+        entities.append({"prefab": name, "position": (x, y, float(at(z, x, y)) + sink), "rotation": rot, "scale": (sc, sc, sc)})
         rocks.append((x, y, sc, why))
         R = (5.5 if u["scale"] > 0.8 else 14.0) * sc
         j0, j1 = int(max(0, (y - R) / cell)), int(min(N, (y + R) / cell + 1)); i0, i1 = int(max(0, (x - R) / cell)), int(min(N, (x + R) / cell + 1))
@@ -332,13 +390,17 @@ def design(rules, kind=None, seed=None, log=print):
     walk = scenebuild.polygon_mask(border, F.shape, cell) & ~deep & ~blocked
 
     def g(x, y): return float(at(z, x, y))
-    views = [("overview", (C - 260 * ca + 60 * sa, C - 260 * sa - 60 * ca, g(C, C) + 150.0), (C, C, g(C, C))),
-             ("top", (C, C - 1.0, g(C, C) + 520.0), (C, C, g(C, C))),
-             ("spawn", (spawn_pts[0][0], spawn_pts[0][1], g(*spawn_pts[0]) + 2.2), (C, C, g(C, C) + 1.0))]
+    a_, b_ = spawn_pts
+    def toward(p, q, back=0.0, side=0.0):
+        dx, dy = q[0] - p[0], q[1] - p[1]; L = math.hypot(dx, dy) or 1.0
+        return (p[0] - dx / L * back - dy / L * side, p[1] - dy / L * back + dx / L * side)
+    views = [("spawnA", toward(a_, (C, C), 20.0) + (0.0,), (C, C, g(C, C))), ("spawnB", toward(b_, (C, C), 20.0) + (0.0,), (C, C, g(C, C))),
+             ("centre", (C, C, 0.0), (a_[0], a_[1], g(*a_))), ("flank", (C - 170 * sa, C + 170 * ca, 0.0), (C, C, g(C, C)))]
     for typ, x, y, rad, face in feats[:3]:
-        views.append((typ, (x + 45 * math.cos(face + 0.6), y + 45 * math.sin(face + 0.6), g(x, y) + 9.0), (x, y, g(x, y) + 1.5)))
-    if rocks:
-        x, y = rocks[len(rocks) // 2][:2]; views.append(("rock", (x + 22.0, y + 14.0, g(x, y) + 5.0), (x, y, g(x, y) + 2.0)))
+        e = toward((x, y), (C, C), -30.0, 12.0); views.append((typ, e + (0.0,), (x, y, g(x, y) + 1.0)))
+    near = [q for q in rocks if q[3] != "scree" and math.hypot(q[0] - C, q[1] - C) < PLAY]
+    for q in near[:2]:
+        e = toward(q[:2], (C, C), -24.0, 8.0); views.append(("rock", e + (0.0,), (q[0], q[1], g(q[0], q[1]) + 1.5)))
     d = {"rules": rules, "kind": kind, "seed": seed, "axis": axis, "template": tpl, "z": z, "masks": masks, "roles": roles, "forest": forest, "views": views,
          "under": under, "deep": deep, "level": level, "rocks": rocks, "entities": entities, "features": feats, "border": border, "paths": paths,
          "walk": walk, "slope": sl, "seconds": time.time() - t0}

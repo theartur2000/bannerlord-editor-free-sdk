@@ -156,7 +156,7 @@ namespace GenFields
     {
         static readonly float[] ShotTimes = { 3f, 8f, 14f, 22f, 32f, 45f, 58f };
         float _t, _fightT = -1f, _nextCount, _viewT;
-        System.Collections.Generic.List<string[]> _views; int _view = -1; bool _viewShot; Camera _cam;
+        System.Collections.Generic.List<string[]> _views; int _view = -1; bool _viewShot; float _bearing, _elevation;
         bool _deployDone, _charged, _ended;
         int _shot, _spawnedUs, _spawnedThem;
         string _shotDir;
@@ -185,27 +185,33 @@ namespace GenFields
 
         static float F(string s) => float.Parse(s, CultureInfo.InvariantCulture);
 
-        // true while the viewpoints are being shown: each one for 2.5 s, its screenshot after 1.5 s
+        // true while the viewpoints are being shown: each one for 3 s, its screenshot after 2 s.
+        // The player is moved to the viewpoint and the normal camera is turned towards the target. A custom camera or the
+        // free camera would be simpler, but with those the terrain is still culled for the player's own view (most of it is
+        // missing from anywhere else), so every viewpoint is what a player standing there would see: ground level only.
         bool TickViews(float dt)
         {
             if (_views == null || _view >= _views.Count) return false;
             var ms = ScreenManager.TopScreen as MissionScreen;
-            if (ms == null) return true;
+            Agent main = Mission.MainAgent;
+            if (ms == null || main == null || !main.IsActive()) return true;
             _viewT += dt;
-            if (_cam != null && _view >= 0) { MatrixFrame fr = _cam.Frame; Mission.SetCameraFrame(ref fr, 1f); }   // the mission culls and streams the terrain around this frame; the screen only passes it for its own camera
-            if (_view < 0 || _viewT > 2.5f)
+            if (_view < 0 || _viewT > 3f)
             {
                 _view++; _viewT = 0f; _viewShot = false;
-                if (_view >= _views.Count) { ms.CustomCamera = null; Log.Write("views done"); return false; }
+                if (_view >= _views.Count) { Log.Write("views done"); return false; }
                 string[] w = _views[_view];
-                if (_cam == null) _cam = Camera.CreateCamera();
-                _cam.SetFovVertical(65f * (float)Math.PI / 180f, Screen.AspectRatio, 0.1f, 12500f);     // the mission screen only sets a custom camera's projection while zooming
                 var eye = new Vec3(F(w[1]), F(w[2]), F(w[3])); var tgt = new Vec3(F(w[4]), F(w[5]), F(w[6]));
-                Vec3 up = (Math.Abs(eye.x - tgt.x) + Math.Abs(eye.y - tgt.y) < 3f) ? new Vec3(0f, 1f, 0f) : new Vec3(0f, 0f, 1f);
-                _cam.LookAt(eye, tgt, up);
-                ms.CustomCamera = _cam;
+                Vec3 pos = eye; pos.z = Mission.Scene.GetGroundHeightAtPosition(new Vec3(eye.x, eye.y, eye.z + 50f));
+                (main.MountAgent ?? main).TeleportToPosition(pos);
+                Vec3 look = tgt - pos; float flat = (float)Math.Sqrt(look.x * look.x + look.y * look.y);
+                _bearing = (float)Math.Atan2(-look.x, look.y);                 // the camera's bearing: 0 looks along +y
+                _elevation = flat > 1f ? (float)Math.Atan2(look.z - 2f, flat) : -0.2f;
+                var dir = new Vec2(look.x, look.y); if (dir.Length > 0.01f) { dir.Normalize(); main.SetMovementDirection(in dir); }
             }
-            else if (!_viewShot && _viewT > 1.5f)
+            ms.CameraBearing = _bearing;
+            try { typeof(MissionScreen).GetProperty("CameraElevation").SetValue(ms, _elevation); } catch { }
+            if (!_viewShot && _viewT > 2f)
             {
                 _viewShot = true;
                 string f = Path.Combine(_shotDir, Mission.SceneName + "_view" + _view + "_" + _views[_view][0] + ".bmp");

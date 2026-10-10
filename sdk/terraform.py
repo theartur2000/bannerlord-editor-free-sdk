@@ -163,13 +163,22 @@ def _cubic(n, m):
 
 
 def noise(shape, cell, wavelength, rng):
-    """Smooth noise in about [-1, 1] whose bumps are about `wavelength` metres across."""
+    """Gradient (Perlin) noise in about [-1, 1] whose bumps are about `wavelength` metres across. A random unit vector sits
+    on every lattice corner; a sample is the blend of its four corners' gradients, with the quintic fade. Unlike noise made
+    by interpolating random values, it has no flat-topped blobs and no visible lattice."""
     h, w = shape
-    ny = max(1, int(round(h * cell / wavelength))); nx = max(1, int(round(w * cell / wavelength)))
-    g = rng.standard_normal((ny + 3, nx + 3)) * 0.6
-    iy, wy = _cubic(ny, h); ix, wx = _cubic(nx, w)
-    rows = (g[iy] * wy[:, :, None]).sum(axis=1)
-    return (rows[:, ix] * wx[None, :, :]).sum(axis=2)
+    fy = h * cell / wavelength; fx = w * cell / wavelength
+    ang = rng.uniform(0.0, 2.0 * np.pi, (int(np.ceil(fy)) + 2, int(np.ceil(fx)) + 2))
+    gx = np.cos(ang); gy = np.sin(ang)
+    y = (np.arange(h) * (fy / h))[:, None]; x = (np.arange(w) * (fx / w))[None, :]
+    y0 = np.floor(y).astype(np.int64); x0 = np.floor(x).astype(np.int64)
+    ty = y - y0; tx = x - x0
+    n00 = gx[y0, x0] * tx + gy[y0, x0] * ty
+    n10 = gx[y0, x0 + 1] * (tx - 1) + gy[y0, x0 + 1] * ty
+    n01 = gx[y0 + 1, x0] * tx + gy[y0 + 1, x0] * (ty - 1)
+    n11 = gx[y0 + 1, x0 + 1] * (tx - 1) + gy[y0 + 1, x0 + 1] * (ty - 1)
+    u = tx * tx * tx * (tx * (tx * 6 - 15) + 10); v = ty * ty * ty * (ty * (ty * 6 - 15) + 10)
+    return ((n00 * (1 - u) + n10 * u) * (1 - v) + (n01 * (1 - u) + n11 * u) * v) * 1.5
 
 
 def fbm(shape, cell, wavelength, octaves, rng, gain=0.5, ridged=False, erode=0.0):
@@ -244,3 +253,133 @@ class Field:
             x += float(self.rng.uniform(-1, 1)) * radius * jitter; y += float(self.rng.uniform(-1, 1)) * radius * jitter
             acc = np.maximum(acc, self.hill(x, y, r, h, plateau=plateau, sharp=sharp))
         return blur_fast(acc, 7.0 / self.cell)
+
+
+# ---------------------------------------------------------------- making it look like land
+
+def warp(a, dx, dy, cell):
+    """Domain warping: every sample of `a` is read `dx`, `dy` metres away from where it is. With smooth noise as the
+    displacement this bends round shapes into organic ones."""
+    h, w = a.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    sx = np.clip(xx + dx / cell, 0, w - 1.001); sy = np.clip(yy + dy / cell, 0, h - 1.001)
+    x0 = sx.astype(np.int64); y0 = sy.astype(np.int64); tx = sx - x0; ty = sy - y0
+    return a[y0, x0] * (1 - tx) * (1 - ty) + a[y0, x0 + 1] * tx * (1 - ty) + a[y0 + 1, x0] * (1 - tx) * ty + a[y0 + 1, x0 + 1] * tx * ty
+
+
+def _fill(z, eps=1e-3):
+    """Priority-flood: the same heights with every pit raised just enough that water runs out over the border.
+    Returns (filled heights, the order the cells were reached in: lowest outlets first)."""
+    import heapq
+    h, w = z.shape; zf = z.copy().tolist(); done = [[False] * w for _ in range(h)]; heap = []; order = []
+    for j in range(h):
+        for i in (0, w - 1): heap.append((zf[j][i], j, i)); done[j][i] = True
+    for i in range(1, w - 1):
+        for j in (0, h - 1): heap.append((zf[j][i], j, i)); done[j][i] = True
+    heapq.heapify(heap); push = heapq.heappush; pop = heapq.heappop
+    while heap:
+        v, j, i = pop(heap); order.append(j * w + i)
+        for dj, di in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+            y = j + dj; x = i + di
+            if 0 <= y < h and 0 <= x < w and not done[y][x]:
+                done[y][x] = True
+                if zf[y][x] < v + eps: zf[y][x] = v + eps
+                push(heap, (zf[y][x], y, x))
+    return np.asarray(zf), order
+
+
+def erode_fluvial(z, cell, strength=1.0, iterations=6, grid=257, m=0.45, diffusion=0.17, rng=None):
+    """Erosion by running water (the stream power law): water is routed downhill, each spot is cut in proportion to the
+    water gathered above it and to its slope, so gullies grow into branching valleys with ridges between them. Solved on a
+    coarse grid with the implicit scheme of Braun and Willett; the change is laid back over the full-size heights.
+    The routing surface is jittered a little each round (rng), which stops channels on flat ground from running in straight
+    lines along the grid. Returns (eroded heights, drainage area in square metres at full size)."""
+    rng = rng or np.random.default_rng(0)
+    n = z.shape[0]; step = max(1, (n - 1) // (grid - 1))
+    zc = blur_fast(z, step / 2.0)[::step, ::step].copy(); c = cell * step
+    h, w = zc.shape; z0 = zc.copy(); kdt = 0.03 * strength
+    offs = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
+    area = np.full(h * w, c * c)
+    for _ in range(iterations):
+        # water finds its way over a slightly uneven surface: smooth bumps of a few decimetres make channels wander on flat
+        # ground instead of following the grid, a little white noise breaks the last ties
+        rough = 0.35 * noise(zc.shape, c, 45.0, rng) + 0.2 * noise(zc.shape, c, 18.0, rng) + rng.normal(0.0, 0.03, zc.shape)
+        zf, order = _fill(zc + rough)
+        # the steepest way down on the filled surface
+        pad = np.pad(zf, 1, mode="edge"); best = np.zeros((h, w)); rec = np.arange(h * w).reshape(h, w).copy(); dist = np.full((h, w), c)
+        for dj, di in offs:
+            nb = pad[1 + dj:1 + dj + h, 1 + di:1 + di + w]; L = c * (1.41421356 if dj and di else 1.0)
+            sl = (zf - nb) / L
+            jj = np.clip(np.arange(h)[:, None] + dj, 0, h - 1); ii = np.clip(np.arange(w)[None, :] + di, 0, w - 1)
+            better = sl > best
+            best = np.where(better, sl, best); rec = np.where(better, jj * w + ii, rec); dist = np.where(better, L, dist)
+        recl = rec.ravel().tolist(); distl = dist.ravel().tolist()
+        a = [c * c] * (h * w)
+        for i in reversed(order):                      # highest first: pass the gathered water on
+            r = recl[i]
+            if r != i: a[r] += a[i]
+        zl = zc.ravel().tolist()
+        for i in order:                                # lowest first: each cell is cut towards the one it drains to
+            r = recl[i]
+            if r != i:
+                f = kdt * (a[i] ** m) / distl[i]
+                zl[i] = (zl[i] + f * zl[r]) / (1.0 + f)
+        zc = np.asarray(zl).reshape(h, w)
+        lap = (np.roll(zc, 1, 0) + np.roll(zc, -1, 0) + np.roll(zc, 1, 1) + np.roll(zc, -1, 1) - 4 * zc)
+        lap[0, :] = lap[-1, :] = 0; lap[:, 0] = lap[:, -1] = 0
+        zc = zc + diffusion * lap                      # hillslopes creep: no knife edges between the gullies
+        area = np.asarray(a)
+    def up(g):
+        iy = np.linspace(0, h - 1, n); ix = np.linspace(0, w - 1, n)
+        y0 = np.minimum(iy.astype(np.int64), h - 2); x0 = np.minimum(ix.astype(np.int64), w - 2)
+        ty = (iy - y0)[:, None]; tx = (ix - x0)[None, :]
+        return g[y0][:, x0] * (1 - ty) * (1 - tx) + g[y0][:, x0 + 1] * (1 - ty) * tx + g[y0 + 1][:, x0] * ty * (1 - tx) + g[y0 + 1][:, x0 + 1] * ty * tx
+    delta = blur_fast(up(zc - z0), step * 1.0)
+    return z + delta, up(area.reshape(h, w))
+
+
+def erode_thermal(z, cell, talus=1.0, iterations=24, rate=0.2):
+    """Thermal erosion: wherever the ground is steeper than `talus` (rise over run) the excess slides to the lower
+    neighbour, so cliffs keep their faces but grow scree at their feet and lose their razor edges."""
+    z = z.copy(); t = talus * cell
+    for _ in range(iterations):
+        d = np.zeros_like(z)
+        for ax, sh in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            nb = np.roll(z, sh, ax); diff = z - nb
+            move = rate * np.clip(diff - t, 0, None) * 0.5
+            if ax == 0:
+                if sh == 1: move[0, :] = 0
+                else: move[-1, :] = 0
+            else:
+                if sh == 1: move[:, 0] = 0
+                else: move[:, -1] = 0
+            d -= move; d += np.roll(move, -sh, ax)
+        z += d
+    return z
+
+
+def poisson(size, radius, rng, accept=None, tries=20, limit=4000):
+    """Points in a square of `size` metres that are never closer than `radius` to each other (Bridson's Poisson-disk
+    sampling): the even-but-irregular spacing of things that grow or lie about. accept(x, y) -> bool filters them."""
+    cs = radius / 1.41421356; g = int(np.ceil(size / cs)); grid = -np.ones((g, g), np.int64)
+    pts = []; active = []
+    def ok(x, y):
+        if not (0 <= x < size and 0 <= y < size): return False
+        gi = int(x / cs); gj = int(y / cs)
+        for j in range(max(0, gj - 2), min(g, gj + 3)):
+            for i in range(max(0, gi - 2), min(g, gi + 3)):
+                k = grid[j, i]
+                if k >= 0 and (pts[k][0] - x) ** 2 + (pts[k][1] - y) ** 2 < radius * radius: return False
+        return True
+    def add(x, y):
+        grid[int(y / cs), int(x / cs)] = len(pts); pts.append((x, y)); active.append(len(pts) - 1)
+    add(float(rng.uniform(0, size)), float(rng.uniform(0, size)))
+    while active and len(pts) < limit:
+        k = int(rng.integers(len(active))); bx, by = pts[active[k]]
+        for _ in range(tries):
+            a = float(rng.uniform(0, 2 * np.pi)); d = float(rng.uniform(radius, 2 * radius))
+            x = bx + d * np.cos(a); y = by + d * np.sin(a)
+            if ok(x, y): add(x, y); break
+        else:
+            active[k] = active[-1]; active.pop()
+    return [q for q in pts if accept is None or accept(q[0], q[1])]

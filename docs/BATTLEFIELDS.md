@@ -151,14 +151,31 @@ How a field is composed:
 6. Textures are painted by job (rock on steep ground, soil in hollows and on banks, grass variants, snow for winter), whatever the
    template scene calls its layers.
 7. Forest is grown from the template's tree layer, kept off the deployment ground, cliffs and water.
-8. Rocks are placed the way the shipped battlefields place them: which rock, at what scale, how deep in the ground and how tilted
-   is measured from the shipped scenes of the biome (`catalog.rock_usage`). Designers bury them: three metres is typical.
+8. Rocks are placed the way the shipped battlefields place them: which rock, at what scale, how deep in the ground, how tilted
+   and turned which way is measured from the shipped scenes of the biome (`catalog.rock_usage`). Designers bury them: three
+   metres is typical.
 9. High ground and chokepoints get the markers the battle AI reads (TacticalPosition, TacticalRegion).
 
-In game (unmodified game plus GenFields): a ridge field and a river crossing loaded and were fought on; rocks, trees, tall
-grass and the river's water render. Known defects: rocks of the first run stood too large and too high (fixed by the
-measured placement, to be confirmed), a test camera high above a scene with a water level shows water over everything
-(the normal camera does not), spawn sides are not yet checked for fairness.
+Making it look natural (`sdk/terraform.py`):
+- The landforms are bent by domain warping (the coordinates are displaced by noise before the shape is evaluated), so no
+  outline is a circle or a straight bar.
+- Running water shapes the result: a stream-power erosion pass (implicit scheme, priority-flood fill, steepest-descent
+  routing over a slightly roughened surface) cuts gullies and leaves ridges between them; a thermal pass lets the steepest
+  faces slump.
+- Where the flow gathers on sloping ground, bare earth and gravel are painted.
+- Rocks and trees are spread by Poisson-disk sampling: even spacing without a grid.
+
+What the rocks are (`demos/battlefields/lineup.py` puts every rock prefab alone on flat ground to look at):
+- Boulders (`terrain_green_rock_*`, `cave_rock_*`) are closed shapes and are turned any way in the shipped scenes.
+- The cliff pieces (`rock_cliff_a/b/c`, `rock_desert_cliff_*`, `cliff_*`) are one-sided faces. The shipped scenes turn every
+  one of them the same way on a slope: yaw = downhill direction + 90 degrees, within about 20 degrees, laid back into the
+  slope by 0.1 to 0.5 rad. Turned at random, or standing on a crest with no ground behind them, their open backs show as
+  shards hanging in the air. The generator copies the measured turn and lean and skips spots with no higher ground behind.
+
+In game (unmodified game plus GenFields): ridge, river crossing, pass and mesa fields loaded and were fought on, 200 against
+200; rocks, trees, tall grass and the river's water render. Open: the test can only show ground-level views (a camera
+away from the player has most of the terrain culled), spawn sides are not yet checked for fairness, generation takes
+16 to 21 s in Python.
 
 ## 6. Steps
 

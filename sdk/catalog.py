@@ -9,7 +9,7 @@ is cached as JSON under the SDK home; nothing of it is stored in this repository
     cat.scenes("Plain")              -> [{"id", "dir", "terrain", "forest", "nx", "ny", "node_size", "prefabs": {...}}, ...]
     cat.prefabs("Desert", "cliff")   -> [(prefab name, uses, median scale), ...]
 """
-import collections, glob, json, os, re, sys
+import collections, glob, json, math, os, re, sys
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -93,9 +93,16 @@ ROCK_CACHE = os.path.join(config.SDK_HOME, "cache", "rock_usage.json")
 
 
 def rock_usage(refresh=False, log=print):
-    """{terrain type: {prefab: {n, slope, steep_share, dz, dz_lo, dz_hi, scale, scale_hi, tilt}}}: for every rock-like prefab,
-    how the shipped battlefields of a terrain type use it. slope: the ground slope it stands on (median); dz: its origin's
-    height above the ground (median and the 20th / 80th percentile; negative = sunk in); scale; tilt (radians, both axes)."""
+    """{terrain type: {prefab: {n, slope, steep_share, dz, dz_lo, dz_hi, scale, scale_hi, tilt, facing, facing_r, lean}}}: for
+    every rock-like prefab, how the shipped battlefields of a terrain type use it. slope: the ground slope it stands on
+    (median); dz: its origin's height above the ground (median and the 20th / 80th percentile; negative = sunk in); scale;
+    tilt (radians, both axes).
+
+    facing, facing_r, lean: which way it is turned on steep ground. facing is the mean of (yaw - downhill direction) in
+    degrees and facing_r how tightly the scenes agree on it (0 = turned any way, 1 = always the same). The cliff pieces are
+    one-sided faces: the scenes agree to within about 20 degrees (facing_r near 0.9), and turned any other way the open back
+    shows as shards hanging in the air. lean is the median rotation about x on steep ground (negative = laid back into
+    the slope)."""
     if not refresh and os.path.isfile(ROCK_CACHE):
         with open(ROCK_CACHE, "r", encoding="utf-8") as f: return json.load(f)
     import numpy as np
@@ -110,7 +117,7 @@ def rock_usage(refresh=False, log=print):
         except Exception as e:
             log("skipped %s: %s" % (rec["id"], e)); continue
         cell = info["node_size"] * info["nx"] / (z.shape[1] - 1)
-        sl = terraform.slope(terraform.blur_fast(z, 3.0 / cell), cell)
+        zb = terraform.blur_fast(z, 3.0 / cell); sl = terraform.slope(zb, cell); gy, gx = np.gradient(zb, cell)
         for e in scene.load(os.path.join(rec["dir"], "scene.xscene")).entities():
             if not e.prefab or not ROCK.search(e.prefab) or not e.position: continue
             pos = e.position; i = int(round(pos[0] / cell)); j = int(round(pos[1] / cell))
@@ -119,6 +126,8 @@ def rock_usage(refresh=False, log=print):
             st["slope"].append(float(sl[j, i])); st["dz"].append(float(pos[2] - z[j, i]))
             sc = e.scale; st["scale"].append(float(sum(sc) / 3) if sc else 1.0)
             r = e.rotation or (0, 0, 0); st["tilt"].append(abs(r[0]) + abs(r[1]))
+            if sl[j, i] > 0.35:
+                st["facing"].append(r[2] - math.atan2(-gy[j, i], -gx[j, i])); st["lean"].append((r[0] + math.pi) % (2 * math.pi) - math.pi)
     out = {}
     for (biome, name), v in stats.items():
         if len(v["slope"]) < 6: continue
@@ -126,6 +135,9 @@ def rock_usage(refresh=False, log=print):
         out.setdefault(biome, {})[name] = {"n": len(v["slope"]), "slope": round(med(v["slope"]), 2), "steep_share": round(float((np.array(v["slope"]) > 0.45).mean()), 2),
             "dz": round(med(v["dz"]), 1), "dz_lo": round(float(np.percentile(v["dz"], 20)), 1), "dz_hi": round(float(np.percentile(v["dz"], 80)), 1),
             "scale": round(med(v["scale"]), 2), "scale_hi": round(float(np.percentile(v["scale"], 85)), 2), "tilt": round(med(v["tilt"]), 2)}
+        if len(v["facing"]) >= 6:
+            a = np.array(v["facing"]); c, s = float(np.cos(a).mean()), float(np.sin(a).mean())
+            out[biome][name].update({"facing": round(math.degrees(math.atan2(s, c)) % 360, 0), "facing_r": round(math.hypot(c, s), 2), "lean": round(med(v["lean"]), 2)})
     os.makedirs(os.path.dirname(ROCK_CACHE), exist_ok=True)
     with open(ROCK_CACHE, "w", encoding="utf-8") as f: json.dump(out, f)
     return out
