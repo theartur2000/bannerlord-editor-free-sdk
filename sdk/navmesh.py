@@ -6,9 +6,9 @@ Layout, worked out from the files of game v1.4.8.119303:
   u64 kind (3) u64 raw_size u64 stored_size     stored_size counts from here to the end of the file
   16 bytes that look like leftovers; kept as read, zero when built new
   LZ4 block -> payload:
-      "NMG9"
+      "NMG9" (also read and written: the older "NMG8" and "NMG7" that many shipped scenes still carry)
       u32 vertex count, then x y z as f32 per vertex
-      u32 edge count, then per edge 6 x i32: -1, vertex a, vertex b, -1, -1, 0
+      u32 edge count, then per edge 6 x i32: -1, vertex a, vertex b, -1, -1, 0        (NMG7, NMG8: 5 x i32, without the last)
       u32 face count, then per face:
           i32 n (3 or 4), n x i32 vertex index, n x i32 edge index (edge i joins vertex i and vertex i + 1)
           i32 kind       2 in every file read so far
@@ -18,7 +18,7 @@ Layout, worked out from the files of game v1.4.8.119303:
                          11 river, ...); 0 on the battlefields read so far
           f32 value      0.0 on most faces; 50.0 on a few faces of one battlefield (meaning not known)
           u32 flags      a bit mask; 0xFFFFFFFF on most battlefield faces, other values on the world map
-          u8  zero
+          u8  zero       (absent in NMG7, where flags are small values such as 0x0F)
       u32 m (32), then m x 8 bytes (zero in every file read so far)
 
   Faces are convex, counter-clockwise seen from above.
@@ -36,6 +36,7 @@ else:
 
 class NavMesh:
     def __init__(self, path=None):
+        self.version = 9
         self.vertices = np.zeros((0, 3), np.float32)
         self.edges = np.zeros((0, 2), np.int32)
         self.faces = []            # list of (vertex indices tuple, edge indices tuple)
@@ -54,7 +55,7 @@ class NavMesh:
     def read(self, path):
         with open(path, "rb") as f: d = f.read()
         assert d[:4] == b"RNM1", "not a navmesh.bin"
-        size, = struct.unpack_from("<I", d, 4); assert size == len(d) - 8, (size, len(d))
+        size, = struct.unpack_from("<I", d, 4); assert size == len(d) - 8, ("navmesh.bin size field", size, len(d))
         kind, raw, stored = struct.unpack_from("<3Q", d, 8)
         assert kind == 3 and stored == size, (kind, stored, size)
         self.prefix = d[32:48]
@@ -62,14 +63,15 @@ class NavMesh:
         return self
 
     def parse(self, pay):
-        assert pay[:4] == b"NMG9", pay[:4]
+        assert pay[:3] == b"NMG" and pay[3:4] in (b"7", b"8", b"9"), pay[:4]
+        self.version = int(pay[3:4]); ec = 6 if self.version >= 9 else 5; has_end = self.version >= 8
         nv, = struct.unpack_from("<I", pay, 4)
         self.vertices = np.frombuffer(pay, "<f4", nv * 3, 8).reshape(nv, 3).copy()
         o = 8 + nv * 12
         ne, = struct.unpack_from("<I", pay, o)
-        e = np.frombuffer(pay, "<i4", ne * 6, o + 4).reshape(ne, 6)
-        self.edges = e[:, 1:3].copy(); self.edge_extra = e[:, [0, 3, 4, 5]].copy()
-        o += 4 + ne * 24
+        e = np.frombuffer(pay, "<i4", ne * ec, o + 4).reshape(ne, ec)
+        self.edges = e[:, 1:3].copy(); self.edge_extra = e[:, [0] + list(range(3, ec))].copy()
+        o += 4 + ne * ec * 4
         nf, = struct.unpack_from("<I", pay, o); o += 4
         self.faces = []; self.face_kind = []; self.face_zero = []; self.face_group = []; self.face_value = []; self.face_flags = []; self.face_end = []
         for _ in range(nf):
@@ -77,27 +79,31 @@ class NavMesh:
             assert 3 <= c <= 4, ("face with %d corners at offset %d" % (c, o))
             vs = struct.unpack_from("<%di" % c, pay, o + 4); es = struct.unpack_from("<%di" % c, pay, o + 4 + 4 * c)
             t = o + 4 + 8 * c
-            kind, zero, group, value, flags, end = struct.unpack_from("<3ifIB", pay, t)
+            kind, zero, group, value, flags = struct.unpack_from("<3ifI", pay, t)
+            end = pay[t + 20] if has_end else 0
             self.faces.append((vs, es)); self.face_kind.append(kind); self.face_zero.append(zero); self.face_group.append(group)
             self.face_value.append(pay[t + 12:t + 16]); self.face_flags.append(flags); self.face_end.append(end)
-            o = t + 21
+            o = t + (21 if has_end else 20)
         self.trailer = pay[o:]
         return self
 
     # ---- writing
     def payload(self):
-        out = [b"NMG9", struct.pack("<I", len(self.vertices)), np.ascontiguousarray(self.vertices, "<f4").tobytes()]
+        ec = 6 if self.version >= 9 else 5; has_end = self.version >= 8
+        out = [b"NMG" + str(self.version).encode(), struct.pack("<I", len(self.vertices)), np.ascontiguousarray(self.vertices, "<f4").tobytes()]
         ne = len(self.edges)
-        e = np.empty((ne, 6), "<i4")
-        if self.edge_extra is not None and len(self.edge_extra) == ne: e[:, [0, 3, 4, 5]] = self.edge_extra
-        else: e[:, 0] = -1; e[:, 3] = -1; e[:, 4] = -1; e[:, 5] = 0
+        e = np.empty((ne, ec), "<i4")
+        if self.edge_extra is not None and len(self.edge_extra) == ne and self.edge_extra.shape[1] == ec - 2: e[:, [0] + list(range(3, ec))] = self.edge_extra
+        else:
+            e[:, 0] = -1; e[:, 3] = -1; e[:, 4] = -1
+            if ec == 6: e[:, 5] = 0
         e[:, 1:3] = self.edges
         out += [struct.pack("<I", ne), e.tobytes(), struct.pack("<I", len(self.faces))]
         for k, (vs, es) in enumerate(self.faces):
             c = len(vs)
             out.append(struct.pack("<i%di%di" % (c, c), c, *vs, *es))
             out.append(struct.pack("<3i", self.face_kind[k], self.face_zero[k], self.face_group[k]) + self.face_value[k]
-                       + struct.pack("<IB", self.face_flags[k], self.face_end[k]))
+                       + (struct.pack("<IB", self.face_flags[k], self.face_end[k]) if has_end else struct.pack("<I", self.face_flags[k])))
         out.append(self.trailer)
         return b"".join(out)
 

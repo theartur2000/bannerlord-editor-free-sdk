@@ -23,14 +23,15 @@ Layout, worked out from the files of game v1.4.8.119303:
       WGHT  per node, for every terrain layer of the scene in order: u32 present, then if present [u32 length, PNG 8-bit grey 257 x 257]
       PHYM  per node 4 x [u32 index 0..3, u32 length (66049), 257 x 257 bytes]: one material index map per season
 
-A node covers node_size metres with 257 x 257 samples; neighbours share their border row and column. Heights are
+A node covers node_size metres with 257 x 257 samples on battlefields (other scenes also use 129, 65, ...: the size is
+whatever the node's images have); neighbours share their border row and column. Heights are
 min_height + value / 65535 * (max_height - min_height), with the range from the <terrain> element of scene.xscene.
 Row = y, column = x. Node k sits at column k % nodes_x, row k // nodes_x.
 
 The PNGs carry a pHYs chunk of 2835 pixels per metre and 8192-byte IDAT chunks of a zlib level 6 stream. Two encoder
 profiles are in use, and png_encode() reproduces both byte for byte:
   8-bit grey (WGHT, MIDX)      per row the best of all five filters, default zlib strategy
-  16-bit grey, RGBA (HGHT, NRML)   per row the better of Sub and Paeth only, filtered zlib strategy
+  16-bit grey, RGBA (HGHT, NRML)   per row the best of None, Sub and Paeth only, filtered zlib strategy
 "Best" is the smallest sum of absolute signed filtered bytes, the first candidate on a tie.
 """
 import os, re, struct, sys, zlib
@@ -110,7 +111,7 @@ def _png_chunk(tag, body):
 def png_encode(a):
     """A PNG as the game's files hold it: uint8 (h, w) grey, uint16 (h, w) 16-bit grey, uint8 (h, w, 4) RGBA. Each row gets
     the candidate filter with the smallest sum of absolute signed bytes (the first one on a tie). 8-bit grey: all five
-    filters and the default zlib strategy; 16-bit grey and RGBA: Sub or Paeth and the filtered strategy (module docstring)."""
+    filters and the default zlib strategy; 16-bit grey and RGBA: None, Sub or Paeth and the filtered strategy (module docstring)."""
     a = np.asarray(a)
     if a.dtype == np.uint16:
         assert a.ndim == 2; h, w = a.shape; bd, ct, bpp = 16, 0, 2
@@ -133,14 +134,18 @@ def png_encode(a):
     if bpp == 1: strategy = zlib.Z_DEFAULT_STRATEGY
     else:
         strategy = zlib.Z_FILTERED
-        cost[[0, 2, 3]] = np.iinfo(cost.dtype).max   # only Sub and Paeth compete
+        cost[[2, 3]] = np.iinfo(cost.dtype).max      # only None, Sub and Paeth compete
     best = np.argmin(cost, axis=0)
     stride = rows.shape[1]
     out = np.empty((h, stride + 1), np.uint8)
     out[:, 0] = best
     out[:, 1:] = cands[best, np.arange(h)]
-    c = zlib.compressobj(6, zlib.DEFLATED, 15, 8, strategy)
-    z = c.compress(out.tobytes()) + c.flush()
+    raw = out.tobytes()
+    # the window shrinks for small images the way libpng does it: the smallest power of two that holds the data plus 262
+    wbits = 15; half = 1 << 14
+    while len(raw) + 262 <= half and wbits > 8: half >>= 1; wbits -= 1
+    c = zlib.compressobj(6, zlib.DEFLATED, wbits, 8, strategy)
+    z = c.compress(raw) + c.flush()
     png = [PNG_MAGIC, _png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, bd, ct, 0, 0, 0)),
            _png_chunk(b"pHYs", struct.pack(">IIB", 2835, 2835, 1))]
     for i in range(0, len(z), 8192): png.append(_png_chunk(b"IDAT", z[i:i + 8192]))
@@ -254,12 +259,13 @@ class Terrain:
         """Per node an array (4, 257, 257) uint8: the physics material index map of each season."""
         out = []
         for b in self.node_blobs("PHYM"):
-            a = np.empty((SEASONS, NODE, NODE), np.uint8); q = 0
+            maps = []; q = 0
             for s in range(SEASONS):
-                idx, n = struct.unpack_from("<2I", b, q); assert idx == s and n == NODE * NODE, (idx, n)
-                a[s] = np.frombuffer(b, np.uint8, n, q + 8).reshape(NODE, NODE); q += 8 + n
+                idx, n = struct.unpack_from("<2I", b, q); side = int(round(n ** 0.5))
+                assert idx == s and side * side == n, ("physics block", idx, n)
+                maps.append(np.frombuffer(b, np.uint8, n, q + 8).reshape(side, side)); q += 8 + n
             assert q == len(b)
-            out.append(a)
+            out.append(np.stack(maps))
         return out
 
     def heightmap(self, info):
@@ -277,10 +283,15 @@ class Terrain:
 def join_nodes(nodes, nx, ny):
     """Per-node (257, 257[, c]) arrays to one (ny * 256 + 1, nx * 256 + 1[, c]) array."""
     assert len(nodes) == nx * ny, (len(nodes), nx, ny)
-    full = np.zeros((ny * 256 + 1, nx * 256 + 1) + nodes[0].shape[2:], nodes[0].dtype)
+    side = max(h.shape[0] for h in nodes); step = side - 1
+    full = np.zeros((ny * step + 1, nx * step + 1) + nodes[0].shape[2:], nodes[0].dtype)
     for k, h in enumerate(nodes):
         j, i = divmod(k, nx)
-        full[j * 256:j * 256 + NODE, i * 256:i * 256 + NODE] = h
+        if h.shape[0] != side:                       # a coarser node: repeat its samples up to the finest node's grid
+            r = step // (h.shape[0] - 1)
+            h = np.kron(h[:-1, :-1], np.ones((r, r), h.dtype)) if h.ndim == 2 else h
+            pad = np.zeros((side, side), nodes[0].dtype); pad[:step, :step] = h; pad[step, :step] = h[-1]; pad[:step, step] = h[:, -1]; pad[step, step] = h[-1, -1]; h = pad
+        full[j * step:j * step + side, i * step:i * step + side] = h
     return full
 
 
@@ -307,7 +318,7 @@ def build(data, lz4=None):
            "NRML": [_blob(png_encode(v)) for v in data["normals"]],
            "WGHT": [b"".join(struct.pack("<I", 0) if w is None else struct.pack("<I", 1) + _blob(png_encode(w)) for w in layers)
                     for layers in data["weights"]],
-           "PHYM": [b"".join(struct.pack("<2I", s, NODE * NODE) + np.ascontiguousarray(p[s]).tobytes() for s in range(SEASONS))
+           "PHYM": [b"".join(struct.pack("<2I", s, p[s].size) + np.ascontiguousarray(p[s]).tobytes() for s in range(SEASONS))
                     for p in data["physics"]]}
     return assemble(pay, data.get("version", 2), data.get("prefix"), lz4)
 
