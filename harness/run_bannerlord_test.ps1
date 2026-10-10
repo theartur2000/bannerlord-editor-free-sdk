@@ -1,4 +1,4 @@
-# Launch Bannerlord with only the modules a test needs (command line, so the launcher's saved mod list is untouched), wait until
+﻿# Launch Bannerlord with only the modules a test needs (command line, so the launcher's saved mod list is untouched), wait until
 # the game quits itself or a timeout passes, restore the user's config, and report whether the saves were touched.
 #   run_bannerlord_test.ps1 -Module <YourModule> [-Tag run1] [-TimeoutSec 420] [-Campaign] [-Story] [-ModulesBefore "Bannerlord.Harmony"]
 #                           [-ExtraArgs "..."] [-LogFile <path>] [-EndMarker AUTOTEST_DONE] [-OutDir <folder>]
@@ -10,7 +10,8 @@
 # the module's C# part, when BANNERLORD_AUTOTEST=1 is set, runs the words in it and quits. This script sets that variable.
 # -LogFile/-EndMarker: when the module's log contains the marker the run counts as finished; the game is given 20 s to quit by
 # itself and is then stopped by PID. Only the PID this script started is ever stopped.
-# Sends no input to the game. Exit codes: 0 ran to the end or timeout handling done, 3 the game was already running.
+# Answers three message boxes of the game by button text (safe mode: No, shader cache notice: OK, crash file collection: No).
+# Sends no other input to the game. Exit codes: 0 ran to the end or timeout handling done, 3 the game was already running.
 param([Parameter(Mandatory = $true)][string]$Module, [string]$Tag = "run1", [int]$TimeoutSec = 420, [int]$Every = 4,
       [switch]$Campaign, [switch]$Story, [switch]$SoundEngine, [string]$ModulesBefore = "", [string]$ExtraArgs = "",
       [string]$LogFile = "", [string]$EndMarker = "AUTOTEST_DONE", [string]$OutDir = "")
@@ -37,6 +38,15 @@ try {
     while (-not $p.HasExited) {
         Start-Sleep -Seconds $Every
         $el = [int]((Get-Date) - $t0).TotalSeconds
+        # the game's own message boxes would hold an unattended run for ever (dialogs.ps1 presses a button by its text, no focus change):
+        #   "Would you like to enable safe mode?" after a run that did not end cleanly: No (safe mode turns the modules off)
+        #   the "runtime shader cache" notice after the module list changed: OK
+        #   the crash reporter's "collect necessary files" question: No, nothing is collected or sent
+        $d = (& "$here\dialogs.ps1" -names $p.ProcessName) -join " "
+        if ($d -match "enable safe mode") { & "$here\dialogs.ps1" -press No -names $p.ProcessName | Out-Null; "$el s: answered No to the safe mode prompt" }
+        elseif ($d -match "runtime shader cache") { & "$here\dialogs.ps1" -press OK -names $p.ProcessName | Out-Null; "$el s: pressed OK on the shader cache notice" }
+        elseif ($d -match "DIALOG") { "$el s: unanswered dialog: $d" }
+        if (((& "$here\dialogs.ps1" -names csrss) -join " ") -match "collect necessary files") { & "$here\dialogs.ps1" -press No -names csrss | Out-Null; "$el s: CRASH, declined the collect prompt" }
         if (-not $p.Responding) { "$el s: not responding" }
         if ($LogFile -and -not $markerAt -and (Test-Path $LogFile)) {
             $fs = [IO.File]::Open($LogFile, "Open", "Read", "ReadWrite")

@@ -15,3 +15,5 @@ decomp*/
 shard_*.c
 *.dmp
 *.out.txt
+obj/
+bin/
