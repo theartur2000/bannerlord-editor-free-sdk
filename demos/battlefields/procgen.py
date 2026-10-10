@@ -1,0 +1,419 @@
+"""Tech demo: a battlefield invented fresh for every battle, with the world map as the rule book.
+
+The map does not supply the shape of the ground. It supplies the rules: which biome, how rugged, how much forest, whether
+there is a river, a lake or the sea and on which side. The generator then composes a field the way a level designer
+would: it picks a layout (ridge, valley, hill, river crossing, forest clearing, pass, coastal bluff, broken ground, mesas),
+draws its landforms, frames the play area with scenery, lays real small relief from shipped battlefields over it, cuts
+the water, grows the forest, sets rocks on the steep ground, and marks high ground and chokepoints for the battle AI.
+
+    python demos/battlefields/procgen.py --map 493.6 403.2 --name gen_proc_1 --preview out.png      rules from a map position
+    python demos/battlefields/procgen.py --biome Plain --kind ridge --rugged 0.5 --seed 7 --preview out.png
+
+Same seed, same field. Without --seed every run is a new field. This is a demo built with the SDK, not part of it.
+"""
+import argparse, math, os, sys, time, zlib
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "..", "sdk"))
+import catalog, config, scenebuild, terraform, terrain, worldmap   # noqa: E402
+from terraform import smoothstep                                    # noqa: E402
+
+FIELD = 1200.0
+N = 1537
+C = FIELD / 2
+PLAY = 330.0                  # radius of the walkable area
+SPAWN = 235.0                 # the armies start this far from the middle
+KINDS = ("ridge", "valley", "hill", "crossing", "clearing", "pass", "bluff", "broken", "mesa")
+TEMPLATES = {"Plain": "battle_terrain_a", "Desert": "battle_terrain_b", "Steppe": "battle_terrain_c"}
+SKIP_ROCKS = ("far", "bridge", "heap", "top", "ambush", "wall")   # scenery for the distance, buildings, and pieces with special uses
+
+
+class Rules:
+    """What the map says about a place."""
+
+    def __init__(self, biome="Plain", rugged=0.4, forest=0.2, water=None, water_dir=0.0, source=""):
+        self.biome = biome; self.rugged = float(rugged); self.forest = float(forest)
+        self.water = water; self.water_dir = float(water_dir); self.source = source
+
+    def __repr__(self):
+        return "Rules(%s, rugged %.2f, forest %.2f, water %s%s)" % (self.biome, self.rugged, self.forest, self.water, (" from " + self.source) if self.source else "")
+
+
+def rules_from_map(center, wm=None, window=40.0):
+    """Reads the rules for a campaign map position from its surroundings (a square of `window` map units)."""
+    wm = wm or worldmap.WorldMap()
+    t = wm.types_patch(center, window, 161)
+    total = float(t.size)
+    def share(*ids): return float(np.isin(t, ids).sum()) / total
+    desert = share(2, 16, 13); steppe = share(5); swamp = share(15)
+    plain = share(1, 4, 7, 14, 3, 20)
+    biome = max((("Desert", desert), ("Steppe", steppe), ("Swamp", swamp), ("Plain", plain)), key=lambda kv: kv[1])[0]
+    z = wm.patch(center, window, 97)
+    relief = float(np.percentile(z, 95) - np.percentile(z, 5))
+    rugged = float(np.clip(0.10 + relief / 6.0 + 0.9 * share(7) + 0.5 * share(13, 21), 0.05, 1.0))
+    land = max(1e-6, 1.0 - share(0, 8, 10, 11, 18, 19, 22))
+    forest = float(np.clip(share(4) / land, 0.0, 1.0))
+    river = share(11, 6, 22); lake = share(8); sea = share(10, 18, 19) + (share(0) if share(10, 18, 19) > 0.02 else 0.0)
+    water = None; wdir = 0.0
+    kind = max((("sea", sea, 0.10), ("river", river, 0.025), ("lake", lake, 0.04)), key=lambda k: k[1] / k[2])
+    if kind[1] >= kind[2]:
+        water = kind[0]
+        ids = {"sea": (10, 18, 19, 0), "river": (11, 6, 22), "lake": (8,)}[water]
+        ys, xs = np.nonzero(np.isin(t, ids))
+        wdir = math.atan2(float(ys.mean()) - 80.0, float(xs.mean()) - 80.0)
+    return Rules(biome, rugged, forest, water, wdir, "map %.1f, %.1f" % center)
+
+
+def pick_kind(rules, rng):
+    r = rules.rugged
+    w = {"ridge": 1.0 + r, "valley": 0.8 + 1.2 * r, "hill": 1.2, "broken": 0.5 + r, "pass": 2.2 * max(0.0, r - 0.35),
+         "clearing": 3.0 * max(0.0, rules.forest - 0.25), "crossing": 0.0, "bluff": 0.0, "mesa": 0.0}
+    if rules.biome == "Desert": w["mesa"] = 1.2 + r; w["clearing"] = 0.0
+    if rules.water == "river": w["crossing"] = 3.0
+    if rules.water == "sea": w["bluff"] = 4.0
+    names = list(w); p = np.array([w[k] for k in names]); p /= p.sum()
+    return names[int(rng.choice(len(names), p=p))]
+
+
+def _roles(tpl):
+    """Sorts the template's texture layers into jobs, whatever the template calls them."""
+    roles = {}
+    def add(role, i): roles.setdefault(role, []).append(i)
+    for i, name in enumerate(tpl.layer_names):
+        if i == 0: continue
+        nm = name.lower(); phys = (tpl.physics[i] or "").lower()
+        if i in tpl.flora_layers: add("grasscover" if "grass" in nm else "flora", i)
+        elif not tpl.enabled["summer"][i] and tpl.enabled["winter"][i]: add("snow", i)
+        elif phys == "stone" or "rock" in nm or "cliff" in nm: add("rock", i)
+        elif phys in ("soil", "sand", "mud") or any(k in nm for k in ("soil", "flow", "dirt", "mud", "earth")): add("soil", i)
+        else: add("grass", i)
+    return roles
+
+
+def design(rules, kind=None, seed=None, log=print):
+    """Everything about one battlefield as arrays and lists; write() turns it into a scene folder."""
+    t0 = time.time()
+    if seed is None: seed = int.from_bytes(os.urandom(4), "little")
+    rng = np.random.default_rng(seed)
+    kind = kind or pick_kind(rules, rng)
+    if kind == "mesa" and rules.biome != "Desert": kind = "broken"
+    cat = catalog.load()
+    tid = TEMPLATES.get(rules.biome) or TEMPLATES["Plain"]
+    tscene = [s for s in cat.records if s["id"] == tid][0]
+    tpl = scenebuild.Template(tscene["dir"])
+    F = terraform.Field(N, FIELD, rng); cell = F.cell; r = rules.rugged
+    axis = float(rng.uniform(0, math.pi))
+    if kind == "bluff": axis = rules.water_dir + math.pi / 2          # the armies face each other along the shore
+    ca, sa = math.cos(axis), math.sin(axis)
+    U = (F.X - C) * ca + (F.Y - C) * sa; V = -(F.X - C) * sa + (F.Y - C) * ca
+    def pt(u, v): return (C + u * ca - v * sa, C + u * sa + v * ca)
+    def uni(a, b): return float(rng.uniform(a, b))
+    rr = F.dist(C, C)
+    feats = []                                                         # (type, x, y, radius, facing)
+    z = (5.0 + 12.0 * r) * terraform.fbm(F.shape, cell, 520.0, 3, rng, erode=0.4)
+    river = None; lake = None; sea = None; ring = None
+
+    def line(u0, v0, u1, v1, count): return [pt(u0 + (u1 - u0) * k / (count - 1), v0 + (v1 - v0) * k / (count - 1)) for k in range(count)]
+    if kind == "ridge":
+        u0 = uni(-70, 70); half = uni(340, 430); bend = uni(-70, 70); h = 17 + 26 * r
+        sad = [(uni(0.4, 0.6), uni(0.55, 0.8), uni(0.1, 0.16))]
+        if rng.random() < 0.5: sad.append((uni(0.14, 0.26) if rng.random() < 0.5 else uni(0.74, 0.86), uni(0.4, 0.7), uni(0.08, 0.12)))
+        pts = line(u0 + bend, -half, u0 - bend, half, 9)
+        z += F.chain(pts, uni(85, 120), h, gaps=sad, jitter=0.35)
+        for pos, _, _ in sad:
+            k = pts[int(round(pos * 8))]; feats.append(("choke", k[0], k[1], 22, axis))
+        for pos in (0.25, 0.75):
+            k = pts[int(round(pos * 8))]; feats.append(("high", k[0], k[1], 30, axis))
+    elif kind == "valley":
+        off = uni(200, 255); h = 26 + 38 * r
+        for sgn in (-1, 1):
+            gaps = [(uni(0.3, 0.7), uni(0.35, 0.65), uni(0.1, 0.15))] if rng.random() < 0.6 else []
+            pts = line(-430, sgn * (off + uni(-35, 35)), 430, sgn * (off + uni(-35, 35)), 8)
+            z += F.chain(pts, uni(105, 150), h * uni(0.8, 1.15), gaps=gaps, plateau=uni(0.0, 0.3), jitter=0.4)
+            m = pt(uni(-120, 120), sgn * (off - 70)); feats.append(("high", m[0], m[1], 30, axis + (math.pi / 2 if sgn < 0 else -math.pi / 2)))
+        for _ in range(int(rng.integers(1, 3))):
+            k = pt(uni(-150, 150), uni(-60, 60)); z += F.hill(k[0], k[1], uni(35, 55), uni(4, 8))
+    elif kind == "hill":
+        sgn = 1 if rng.random() < 0.5 else -1
+        p = pt(uni(-60, 60), sgn * uni(70, 150)); R = uni(150, 210)
+        z += F.hill(p[0], p[1], R, 24 + 30 * r, plateau=uni(0.3, 0.45))
+        feats.append(("high", p[0], p[1], 40, axis))
+        q = pt(uni(-200, 200), -sgn * uni(180, 260)); z += F.hill(q[0], q[1], uni(80, 120), uni(10, 18))
+        feats.append(("high", q[0], q[1], 25, axis))
+    elif kind == "crossing":
+        river = {"u0": uni(-40, 40), "amp": uni(25, 60), "lam": uni(110, 190), "phi": uni(0, 6.28),
+                 "fords": [uni(-250, -130), uni(-70, 70), uni(130, 250)][:int(rng.integers(2, 4))]}
+        z += (6 + 10 * r) * smoothstep(np.abs(U - river["u0"]), 40, 320)
+    elif kind == "clearing":
+        ring = {"radius": uni(245, 285)}
+        for _ in range(int(rng.integers(3, 6))):
+            k = pt(uni(-180, 180), uni(-180, 180)); z += F.hill(k[0], k[1], uni(40, 80), uni(3, 6 + 5 * r))
+    elif kind == "pass":
+        w0 = uni(60, 90); h = 42 + 46 * r
+        for sgn in (-1, 1):
+            rad = uni(120, 160)
+            pts = line(-420, sgn * (w0 + rad + uni(40, 110)), 420, sgn * (w0 + rad + uni(40, 110)), 11)
+            pts[5] = pt(uni(-50, 50), sgn * (w0 + rad * 0.95))                       # the narrow place
+            z += F.chain(pts, rad, h * uni(0.85, 1.1), sharp=1.7, jitter=0.45)
+            z += F.hill(*pt(uni(-150, 150), sgn * (w0 + rad + 230)), uni(230, 310), h * 0.9)
+            feats.append(("high", *pt(uni(-80, 80), sgn * (w0 + rad * 0.6)), 30, axis + (math.pi / 2 if sgn < 0 else -math.pi / 2)))
+        feats.append(("choke", C, C, 30, axis))
+    elif kind == "bluff":
+        sea = {"shore": uni(170, 235), "bluff": 9 + 11 * r}
+    elif kind == "broken":
+        K = int(12 + 10 * r); made = 0; tries = 0
+        while made < K and tries < 400:
+            tries += 1
+            u, v = uni(-420, 420), uni(-420, 420)
+            if math.hypot(u, v) > 430 or math.hypot(abs(u) - SPAWN, v) < 85: continue
+            x, y = pt(u, v); z += F.hill(x, y, uni(28, 75), uni(5, 9 + 9 * r), plateau=uni(0, 0.4), sharp=2.0); made += 1
+            if math.hypot(u, v) < 300 and rng.random() < 0.3: feats.append(("high", x, y, 18, axis))
+    elif kind == "mesa":
+        made = 0; tries = 0
+        while made < int(rng.integers(3, 6)) and tries < 200:
+            tries += 1
+            u, v = uni(-380, 380), uni(120, 380) * (1 if rng.random() < 0.5 else -1)
+            x, y = pt(u, v); z += F.hill(x, y, uni(90, 160), uni(16, 30), plateau=uni(0.55, 0.7), sharp=3.0, wobble=0.55); made += 1
+            if math.hypot(u, v) < 300: feats.append(("high", x, y, 35, axis))
+
+    # the frame: hills or mountains around the play area, by how rugged the land is (none out at sea)
+    frame = smoothstep(rr * (1 + 0.12 * F.wobble(300.0)), 400, 590) * (12 + 95 * r) * (0.55 + 0.45 * terraform.fbm(F.shape, cell, 380.0, 4, rng, ridged=True, erode=0.5))
+    if sea is not None:
+        dshore = V + sea["shore"] + 28 * F.wobble(220.0)               # metres inland from the waterline, negative out at sea
+        land = smoothstep(dshore, 40, 170)
+        prof = np.where(dshore < 0, np.maximum(dshore * 0.06, -6.0), 0.0)
+        prof = prof + 1.6 * smoothstep(dshore, 0, 26) + sea["bluff"] * smoothstep(dshore, 26, 62) + 0.02 * np.maximum(dshore - 62, 0)
+        z = prof + z * land * 0.8 + frame * land
+        feats.append(("high", *pt(uni(-60, 60), -sea["shore"] + 90), 30, axis))
+    else:
+        z += frame
+
+    # real landforms and real small relief, lifted from shipped battlefields of this biome and quilted
+    donors = [s for s in cat.scenes(rules.biome if rules.biome in TEMPLATES else "Plain", 6, 200.0)][:5]
+    if tscene not in donors: donors = [tscene] + donors[:4]
+    mid = terraform.DetailBank(cell, wavelength=20.0, clip=3.5, longest=240.0); fine = terraform.DetailBank(cell, wavelength=24.0)
+    for s in donors:
+        zd = terrain.Terrain(os.path.join(s["dir"], "terrain.bin")).heightmap(terrain.scene_terrain_info(os.path.join(s["dir"], "scene.xscene")))
+        mid.add(zd); fine.add(zd)
+    calm = 1.0
+    if sea is not None: calm = smoothstep(dshore, 10, 80)
+    z = z + (0.5 + 0.9 * r) * mid.synthesize(F.shape, seed + 1, patch=260.0) * calm
+    z = z + (fine.apply(z, seed + 2) - z) * calm
+    # level ground where the armies deploy
+    zb = terraform.blur_fast(z, 22.0 / cell)
+    for sgn in (-1, 1):
+        x, y = pt(sgn * SPAWN, 0); w = 0.75 * (1 - smoothstep(F.dist(x, y), 35, 90)); z = z * (1 - w) + zb * w
+
+    # water
+    level = None; under = np.zeros(F.shape, bool); deep = np.zeros(F.shape, bool)
+    if river is not None:
+        Uc = river["u0"] + river["amp"] * np.sin(V / river["lam"] + river["phi"]) + 22 * F.wobble(260.0)
+        dr = np.abs(U - Uc)
+        ford = np.zeros(F.shape)
+        for vf in river["fords"]: ford = np.maximum(ford, 1 - smoothstep(np.abs(V - vf), 14, 32))
+        W = 9.0 + 5.0 * ford
+        level = float(np.percentile(z[dr < 9.0], 25)) - 0.3
+        z = np.minimum(z, level + 0.6 + 0.05 * np.maximum(dr - W, 0) ** 1.2)       # the river sits in a valley
+        z = np.where(dr > W, np.maximum(z, level + 0.6), z)                         # and nothing else is under water
+        inside = 1 - smoothstep(dr, 0.6 * W, 1.15 * W)
+        z = z * (1 - inside) + (level - (2.3 * (1 - ford) + 0.4 * ford) * (1 - smoothstep(dr, 0.3 * W, W))) * inside
+        z = np.maximum(z, level - 2.5)                                              # no pits under the river bed
+        for vf in river["fords"]:
+            if abs(vf) < 250:
+                ucv = river["u0"] + river["amp"] * math.sin(vf / river["lam"] + river["phi"])
+                feats.append(("choke", *pt(ucv, vf), 20, axis))
+    if sea is not None:
+        level = 0.0
+        z = np.where(dshore > 30, np.maximum(z, 0.9 + 0.01 * np.minimum(dshore, 200)), z)      # nothing inland dips under the sea
+    if level is not None: under = z < level - 0.05; deep = z < level - 0.9
+    off = 40.0 - float(z.min()); z = z + off
+    if level is not None: level += off
+
+    # ground textures by job
+    sl = terraform.slope(terraform.blur_fast(z, 1.5), cell)
+    curve = z - terraform.blur_fast(z, 10)
+    wetground = terraform.blur_fast(under.astype(np.float64), 3.0 / cell)
+    roles = _roles(tpl); masks = {}
+    def m8(a): return np.clip(np.rint(np.clip(a, 0, 1) * 255), 0, 255).astype(np.uint8)
+    flat = 1 - smoothstep(sl, 0.25, 0.5)
+    for k, i in enumerate(roles.get("grass", [])):
+        masks[i] = m8(smoothstep(terraform.noise(F.shape, cell, (90.0, 45.0, 160.0, 60.0)[k % 4], rng), 0.05, 0.5) * flat)
+    for k, i in enumerate(roles.get("soil", [])):
+        a = smoothstep(-curve, 0.25, 0.9) * smoothstep(sl, 0.08, 0.25) if k == 0 else np.maximum(smoothstep(-curve, 0.6, 1.6), smoothstep(wetground, 0.15, 0.6))
+        if k == 0 and len(roles.get("soil", [])) == 1: a = np.maximum(a, smoothstep(wetground, 0.15, 0.6))
+        masks[i] = m8(a)
+    for k, i in enumerate(roles.get("rock", [])):
+        masks[i] = m8(smoothstep(sl, 0.42, 0.66) if k == 0 else smoothstep(sl, 0.7 + 0.08 * (k - 1), 1.0 + 0.08 * (k - 1)))
+    for k, i in enumerate(roles.get("snow", [])):
+        masks[i] = m8((1 - smoothstep(sl, 0.45, 0.7)) * (1.0 if k == 0 else smoothstep(terraform.noise(F.shape, cell, 70.0, rng), -0.2, 0.4)))
+
+    # forest
+    fnoise = terraform.fbm(F.shape, cell, 230.0, 4, rng)
+    frac = float(np.clip(rules.forest * 1.1 + 0.03, 0.03, 0.65))
+    if ring is not None:
+        forest = smoothstep(rr * (1 + 0.22 * F.wobble(170.0)), ring["radius"] - 30, ring["radius"] + 25)
+        forest = np.maximum(forest, smoothstep(fnoise, 0.42, 0.52) * 0.9 * smoothstep(rr, 90, 150))
+    else:
+        thr = float(np.quantile(fnoise[rr < 520], 1 - frac))
+        forest = smoothstep(fnoise, thr - 0.03, thr + 0.05) * (0.25 + 0.75 * smoothstep(np.abs(V), 55, 150))
+    forest = forest * (1 - smoothstep(sl, 0.5, 0.75)) * (1 - smoothstep(wetground, 0.02, 0.2))
+    for sgn in (-1, 1): forest = forest * smoothstep(F.dist(*pt(sgn * SPAWN, 0)), 55, 95)
+    if rules.biome == "Desert": forest = forest * 0.6
+    forest = smoothstep(terraform.blur_fast(forest, 2.0 / cell), 0.42, 0.52)
+    for k, i in enumerate(roles.get("flora", [])): masks[i] = m8(forest)
+    for i in roles.get("grasscover", []): masks[i] = m8(flat * smoothstep(terraform.noise(F.shape, cell, 50.0, rng), -0.5, 0.1) * (1 - smoothstep(wetground, 0.05, 0.3)))
+
+    # rocks: on the steep ground, on the high points, and a scatter of outcrops. Which rock, how big, how deep in the ground
+    # and how tilted comes from how the shipped battlefields of this biome use each one (catalog.rock_usage).
+    usage = catalog.rock_usage().get(rules.biome) or catalog.rock_usage().get("Plain", {})
+    usage = {k: v for k, v in usage.items() if v["n"] >= 10 and not any(w in k for w in SKIP_ROCKS)}
+    cliffs = [k for k, v in usage.items() if v["slope"] >= 0.4] or list(usage)
+    lumps = [k for k, v in usage.items() if v["slope"] < 0.4] or cliffs
+    def pick(names):
+        w = np.array([usage[k]["n"] for k in names], float); return names[int(rng.choice(len(names), p=w / w.sum()))]
+    def at(a, x, y): return a[min(N - 1, max(0, int(round(y / cell)))), min(N - 1, max(0, int(round(x / cell))))]
+    spawn_pts = [pt(-SPAWN, 0), pt(SPAWN, 0)]
+    def clear(x, y, d=75.0): return all(math.hypot(x - sx, y - sy) > d for sx, sy in spawn_pts)
+    spots = []
+    step = 26.0
+    for gy in np.arange(30.0, FIELD - 30.0, step):
+        for gx in np.arange(30.0, FIELD - 30.0, step):
+            x = gx + uni(-9, 9); y = gy + uni(-9, 9)
+            if math.hypot(x - C, y - C) > 545 or not clear(x, y) or at(under, x, y): continue
+            if float(at(sl, x, y)) > 0.45 and rng.random() < 0.8: spots.append((x, y, "cliff"))
+    for f in feats:
+        if f[0] != "high": continue
+        for _ in range(int(rng.integers(1, 4))):
+            a = uni(0, 6.28); d = uni(6, f[3]); x, y = f[1] + d * math.cos(a), f[2] + d * math.sin(a)
+            if clear(x, y) and not at(under, x, y): spots.append((x, y, "lump"))
+    for _ in range(int(6 + 16 * r)):
+        a = uni(0, 6.28); d = uni(40, 400); x, y = C + d * math.cos(a), C + d * math.sin(a)
+        if clear(x, y) and not at(under, x, y) and float(at(sl, x, y)) < 0.4: spots.append((x, y, "lump"))
+    if len(spots) > 90: spots = [spots[i] for i in sorted(rng.choice(len(spots), 90, replace=False))]
+    entities = []; blocked = np.zeros(F.shape, bool); rocks = []
+    for x, y, why in spots:
+        name = pick(cliffs if why == "cliff" else lumps); u = usage[name]
+        sc = u["scale"] * uni(0.85, 1.15) if rng.random() < 0.85 else uni(u["scale"], max(u["scale"], u["scale_hi"]))
+        sink = uni(u["dz_lo"], min(0.2, u["dz_hi"])) if u["dz_lo"] < min(0.2, u["dz_hi"]) else min(0.0, u["dz"])
+        if why == "lump": sink = min(sink, u["dz"]) - 0.6 * sc                # a free-standing rock shows less of itself
+        tilt = min(0.6, u["tilt"])
+        entities.append({"prefab": name, "position": (x, y, float(at(z, x, y)) + sink),
+                         "rotation": (uni(-tilt, tilt) / 2, uni(-tilt, tilt) / 2, uni(-3.14, 3.14)), "scale": (sc, sc, sc)})
+        rocks.append((x, y, sc, why))
+        R = (5.5 if u["scale"] > 0.8 else 14.0) * sc
+        j0, j1 = int(max(0, (y - R) / cell)), int(min(N, (y + R) / cell + 1)); i0, i1 = int(max(0, (x - R) / cell)), int(min(N, (x + R) / cell + 1))
+        blocked[j0:j1, i0:i1] |= (F.X[j0:j1, i0:i1] - x) ** 2 + (F.Y[j0:j1, i0:i1] - y) ** 2 < R * R
+
+    # markers for the battle AI
+    for typ, x, y, rad, face in feats:
+        if math.hypot(x - C, y - C) > PLAY - 20 or at(under, x, y): continue
+        entities.append({"prefab": "TacticalPosition", "position": (x, y, float(at(z, x, y))), "rotation": (0.0, 0.0, face),
+                         "scripts": {"TacticalPosition": {"_width": "%.3f" % max(15.0, rad), "_tacticalPositionType": "HighGround" if typ == "high" else "ChokePoint",
+                                                          "_tacticalRegionMembership": "Opening"}}})
+    entities.append({"prefab": "TacticalRegion", "position": (C, C, float(at(z, C, C))), "scripts": {"TacticalRegion": {"radius": "45.000", "tacticalRegionType": "Opening"}}})
+    fy, fx = np.nonzero((forest > 0.6) & (rr < PLAY - 40))
+    if len(fy) > 4000:
+        for _ in range(2):
+            k = int(rng.integers(len(fy))); x, y = fx[k] * cell, fy[k] * cell
+            entities.append({"prefab": "TacticalRegion", "position": (x, y, float(z[fy[k], fx[k]])), "scripts": {"TacticalRegion": {"radius": "35.000", "tacticalRegionType": "Forest"}}})
+
+    # border and spawn paths: the axis first, then the other bearings with the least water, forest and steep ground
+    border = [(C + PLAY * math.cos(a), C + PLAY * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 32, endpoint=False)]
+    def path(angle):
+        pts = []; bad = 0.0
+        for q in np.linspace(-SPAWN / PLAY, SPAWN / PLAY, 7):
+            x = C + PLAY * q * math.cos(angle); y = C + PLAY * q * math.sin(angle)
+            pts.append((x, y, float(at(z, x, y)))); bad += 3.0 * bool(at(deep, x, y)) * (abs(q) > 0.3) + float(at(forest, x, y)) + 2.0 * (float(at(sl, x, y)) > 0.5)
+        return bad + 6.0 * (bool(at(deep, *pts[0][:2])) + bool(at(deep, *pts[-1][:2]))), pts
+    others = sorted((path(axis + math.pi * k / 8) + (k,) for k in range(1, 8)), key=lambda t: t[0])[:3]
+    paths = [path(axis)[1]] + [o[1] for o in sorted(others, key=lambda t: t[2])]
+    walk = scenebuild.polygon_mask(border, F.shape, cell) & ~deep & ~blocked
+
+    def g(x, y): return float(at(z, x, y))
+    views = [("overview", (C - 260 * ca + 60 * sa, C - 260 * sa - 60 * ca, g(C, C) + 150.0), (C, C, g(C, C))),
+             ("top", (C, C - 1.0, g(C, C) + 520.0), (C, C, g(C, C))),
+             ("spawn", (spawn_pts[0][0], spawn_pts[0][1], g(*spawn_pts[0]) + 2.2), (C, C, g(C, C) + 1.0))]
+    for typ, x, y, rad, face in feats[:3]:
+        views.append((typ, (x + 45 * math.cos(face + 0.6), y + 45 * math.sin(face + 0.6), g(x, y) + 9.0), (x, y, g(x, y) + 1.5)))
+    if rocks:
+        x, y = rocks[len(rocks) // 2][:2]; views.append(("rock", (x + 22.0, y + 14.0, g(x, y) + 5.0), (x, y, g(x, y) + 2.0)))
+    d = {"rules": rules, "kind": kind, "seed": seed, "axis": axis, "template": tpl, "z": z, "masks": masks, "roles": roles, "forest": forest, "views": views,
+         "under": under, "deep": deep, "level": level, "rocks": rocks, "entities": entities, "features": feats, "border": border, "paths": paths,
+         "walk": walk, "slope": sl, "seconds": time.time() - t0}
+    play = rr < PLAY
+    d["stats"] = {"relief_play": float(z[play].max() - z[play].min()), "steep_play": float((sl[play] > 0.5).mean()), "forest_play": float((forest[play] > 0.5).mean()),
+                  "water_play": float(under[play].mean()), "rocks": len(rocks)}
+    log("%s %s seed %d: play-area relief %.0f m, steep %.0f %%, forest %.0f %%, water %.0f %%, %d rocks, %.1f s"
+        % (rules.biome, kind, seed, d["stats"]["relief_play"], 100 * d["stats"]["steep_play"], 100 * d["stats"]["forest_play"], 100 * d["stats"]["water_play"], len(rocks), d["seconds"]))
+    return d
+
+
+def write(d, name, out_dir, log=print):
+    """The scene folder of a design."""
+    info = scenebuild.build(d["template"], out_dir, name, d["z"], d["masks"], entities=d["entities"], spawn_paths=d["paths"], border=d["border"],
+                            walkable=d["walk"], water_level=d["level"], log=log)
+    d["nav_cells"] = info["nav_cells"]; d["z"] = info["z"]
+    with open(os.path.join(out_dir, "views.txt"), "w", encoding="utf-8") as f:      # name, eye x y z, target x y z: for the test camera (GenFields autotest word "views")
+        for nm, eye, tgt in d["views"]: f.write("%s %.2f %.2f %.2f %.2f %.2f %.2f\n" % ((nm,) + tuple(eye) + tuple(tgt)))
+    return info
+
+
+def preview(d, path=None, size=900, title=True):
+    """A top view: ground coloured by its textures and shaded, water, forest, rocks, AI markers, border, spawn paths."""
+    from PIL import Image, ImageDraw, ImageFont
+    z = d["z"]; cell = FIELD / (N - 1); tpl = d["template"]; roles = d["roles"]
+    gy, gx = np.gradient(z, cell)
+    nrm = np.dstack((-gx, -gy, np.ones_like(z))); nrm /= np.linalg.norm(nrm, axis=2, keepdims=True)
+    light = np.array([-0.5, 0.5, 0.7]); light /= np.linalg.norm(light)
+    sh = np.clip((nrm * light).sum(axis=2), 0, 1) ** 1.3
+    desert = d["rules"].biome == "Desert"; steppe = d["rules"].biome == "Steppe"
+    col = np.zeros(z.shape + (3,)) + np.array((196, 170, 118) if desert else (150, 148, 88) if steppe else (116, 134, 76))
+    tint = {"grass": [(96, 124, 66), (132, 150, 84), (158, 146, 98), (110, 128, 70)], "soil": [(126, 102, 74), (104, 86, 66)], "rock": [(128, 124, 118), (98, 96, 94), (88, 86, 84)]}
+    if desert: tint = {"grass": [(204, 180, 128), (188, 160, 110)], "soil": [(176, 146, 100), (160, 130, 92)], "rock": [(150, 122, 96), (128, 104, 84), (118, 96, 80)]}
+    for role in ("grass", "soil", "rock"):
+        for k, i in enumerate(roles.get(role, [])):
+            if i in d["masks"]:
+                a = (d["masks"][i].astype(float) / 255)[..., None]; col = col * (1 - a) + np.array(tint[role][k % len(tint[role])]) * a
+    img = col * (0.35 + 0.75 * sh[..., None])
+    fa = np.clip(d["forest"], 0, 1)[..., None] * 0.78
+    img = img * (1 - fa) + np.array((70, 84, 40) if desert else (30, 66, 38)) * fa * (0.55 + 0.6 * sh[..., None])
+    img[d["under"]] = img[d["under"]] * 0.3 + np.array([44, 92, 146]) * 0.7
+    im = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)[::-1]).resize((size, size), Image.LANCZOS)
+    dr = ImageDraw.Draw(im); s = size / FIELD
+    def P(x, y): return (x * s, size - y * s)
+    for x, y, sc, why in d["rocks"]:
+        r = max(1.5, 2.6 * sc / (0.5 if desert else 1.0) * s * 2.2); px, py = P(x, y); dr.ellipse([px - r, py - r, px + r, py + r], fill=(58, 54, 52))
+    b = d["border"]; dr.line([P(*p) for p in b + b[:1]], fill=(235, 70, 60), width=2)
+    for k, pts in enumerate(d["paths"]):
+        c = (90, 170, 255) if k == 0 else (60, 110, 170)
+        dr.line([P(p[0], p[1]) for p in pts], fill=c, width=3 if k == 0 else 1)
+        if k == 0:
+            for p in (pts[0], pts[-1]): px, py = P(p[0], p[1]); dr.ellipse([px - 6, py - 6, px + 6, py + 6], outline=c, width=3)
+    for typ, x, y, rad, face in d["features"]:
+        px, py = P(x, y); c = (255, 220, 60) if typ == "high" else (255, 120, 220)
+        dr.polygon([(px, py - 7), (px - 6, py + 5), (px + 6, py + 5)], outline=c)
+    if title:
+        try: font = ImageFont.truetype("arial.ttf", 20)
+        except Exception: font = ImageFont.load_default()
+        st = d["stats"]; text = "%s  %s   relief %d m  steep %d%%  forest %d%%  rocks %d" % (d["rules"].biome, d["kind"], st["relief_play"], 100 * st["steep_play"], 100 * st["forest_play"], st["rocks"])
+        dr.rectangle([0, 0, size, 28], fill=(18, 18, 20)); dr.text((8, 3), text, fill=(235, 235, 235), font=font)
+    if path: im.save(path)
+    return im
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--map", nargs=2, type=float, metavar=("X", "Y")); ap.add_argument("--biome", default="Plain")
+    ap.add_argument("--kind", choices=KINDS); ap.add_argument("--rugged", type=float, default=0.4); ap.add_argument("--forest", type=float, default=0.2)
+    ap.add_argument("--water", choices=("river", "lake", "sea")); ap.add_argument("--seed", type=int)
+    ap.add_argument("--name"); ap.add_argument("--out"); ap.add_argument("--preview")
+    a = ap.parse_args()
+    rules = rules_from_map(tuple(a.map)) if a.map else Rules(a.biome, a.rugged, a.forest, a.water)
+    print(rules)
+    d = design(rules, a.kind, a.seed)
+    if a.name:
+        out = a.out or os.path.join(config.SDK_STAGE_DIR, "scenes", a.name)
+        write(d, a.name, out); print("scene", a.name, "written to", out)
+    if a.preview: preview(d, a.preview); print("preview", a.preview)

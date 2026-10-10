@@ -117,6 +117,14 @@ class WorldMap:
         g = self.terrain_types(); r = g.shape[0]
         return int(g[min(r - 1, max(0, int(y / self.size[1] * r))), min(r - 1, max(0, int(x / self.size[0] * r)))])
 
+    def types_patch(self, center, size=12.0, samples=1537):
+        """The campaign terrain type of the square of `size` map units around `center` as a (samples, samples) uint8
+        array (row = y), read to the nearest cell of terrain_types()."""
+        g = self.terrain_types(); r = g.shape[0]; cx, cy = center; h = size / 2.0
+        xs = np.clip(((np.linspace(cx - h, cx + h, samples)) / self.size[0] * r).astype(int), 0, r - 1)
+        ys = np.clip(((np.linspace(cy - h, cy + h, samples)) / self.size[1] * r).astype(int), 0, r - 1)
+        return g[ys][:, xs]
+
     def terrain_mix(self, center, size=12.0):
         """{terrain type name: share} of the square of `size` map units around `center`."""
         g = self.terrain_types(); r = g.shape[0]; cx, cy = center; h = size / 2

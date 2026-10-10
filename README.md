@@ -129,6 +129,7 @@ python sdk/install.py status
 | `sdk/worldmap.py` | the campaign map as data: height field, settlements, the patch of land around a map position; `patch` |
 | `sdk/navmesh.py` | `navmesh.bin` reader and writer: vertices, edges, faces with their group, value and flags; `info`, `check` |
 | `sdk/terraform.py` | building blocks for making terrain: filters, slope, small relief quilted from donor terrains, layer masks |
+| `sdk/catalog.py` | what the installed game offers to build from: its battle scenes by terrain type, their prefabs, and how they place each rock |
 | `sdk/scenebuild.py` | a complete scene folder from arrays, with a shipped scene as the template for layers and atmosphere |
 | `demos/battlefields/` | tech demo built with the SDK, not part of it: a battlefield generated from a world map position, and the GenFields test module |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |

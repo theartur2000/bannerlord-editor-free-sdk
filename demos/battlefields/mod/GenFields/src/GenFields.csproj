@@ -21,6 +21,8 @@
     <Reference Include="$(BannerlordDir)\bin\Win64_Shipping_Client\netstandard.dll" Condition="Exists('$(BannerlordDir)\bin\Win64_Shipping_Client\netstandard.dll')">
       <Private>false</Private>
     </Reference>
+    <!-- the test camera uses MissionScreen from the View module -->
+    <Reference Include="$(BannerlordDir)\Modules\Native\bin\Win64_Shipping_Client\TaleWorlds.MountAndBlade.View.dll"><Private>false</Private></Reference>
     <!-- the autotest opens a Custom Battle: CustomGameManager lives in the CustomBattle module -->
     <Reference Include="$(BannerlordDir)\Modules\CustomBattle\bin\Win64_Shipping_Client\TaleWorlds.MountAndBlade.CustomBattle.dll"><Private>false</Private></Reference>
   </ItemGroup>

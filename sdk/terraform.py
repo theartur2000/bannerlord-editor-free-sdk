@@ -67,42 +67,44 @@ class DetailBank:
     `wavelength` is kept, outliers (pits, cliffs) are clipped, and a field is assembled from patches of about `patch` metres,
     each from a random donor at a random offset, flip and turn, cross-faded into its neighbours."""
 
-    def __init__(self, cell, wavelength=24.0, clip=4.0):
-        self.cell = cell; self.wavelength = wavelength; self.clip = clip; self.donors = []
+    def __init__(self, cell, wavelength=24.0, clip=4.0, longest=None):
+        """wavelength: relief finer than this is kept. longest: when given, a band is kept instead: relief between
+        `wavelength` and `longest` metres (whole hillocks, gullies and banks of the donor, without its fine grain)."""
+        self.cell = cell; self.wavelength = wavelength; self.clip = clip; self.longest = longest; self.donors = []
 
     def add(self, z):
-        _, d = split_detail(z, self.cell, self.wavelength)
+        if self.longest:
+            d = blur_fast(z, self.wavelength / self.cell / 2.5) - blur_fast(z, self.longest / self.cell / 2.5)
+        else:
+            _, d = split_detail(z, self.cell, self.wavelength)
         m = int(90.0 / self.cell)            # a terrain's outer strip is often a straight skirt: leave it out
         if min(d.shape) > 4 * m: d = d[m:-m, m:-m]
         lim = self.clip * d.std()
         self.donors.append(np.pad(np.clip(d, -lim, lim), 64, mode="reflect"))
         return self
 
-    def synthesize(self, shape, seed, patch=160.0, sources=10):
-        """A detail field of the given shape (metres), the same for the same seed."""
+    def synthesize(self, shape, seed, patch=160.0, sources=None, soft=None):
+        """A detail field of the given shape, the same for the same seed. The field is laid from square windows of two
+        patches a side that overlap by half and fade into each other (raised cosine); every window is cut from a random
+        donor at a random offset, flip and turn. `sources` and `soft` are accepted for older callers and not used."""
         assert self.donors, "add at least one donor"
         rng = np.random.default_rng(seed); h, w = shape
-        gy = max(2, int(np.ceil(h * self.cell / patch)) + 1); gx = max(2, int(np.ceil(w * self.cell / patch)) + 1)
-        labels = rng.integers(sources, size=(gy, gx))
-        # jittered nearest-patch map, then soft borders
-        yy = (np.arange(h) / h * (gy - 1))[:, None] + 0.35 * (fbm_field((h, w), rng, 5))
-        xx = (np.arange(w) / w * (gx - 1))[None, :] + 0.35 * (fbm_field((h, w), rng, 5))
-        lab = labels[np.clip(np.rint(yy).astype(int), 0, gy - 1), np.clip(np.rint(xx).astype(int), 0, gx - 1)]
-        out = np.zeros(shape); total = np.zeros(shape)
-        soft = max(2.0, 0.12 * patch / self.cell)
-        for s in range(sources):
-            m = (lab == s)
-            if not m.any(): continue
-            wgt = blur_fast(m.astype(np.float64), soft)
-            d = self.donors[int(rng.integers(len(self.donors)))]
-            if rng.integers(2): d = d[::-1]
-            if rng.integers(2): d = d[:, ::-1]
-            d = np.rot90(d, int(rng.integers(4)))
-            if d.shape[0] < h or d.shape[1] < w:
-                d = np.pad(d, ((0, max(0, h - d.shape[0])), (0, max(0, w - d.shape[1]))), mode="reflect")
-            oy = int(rng.integers(d.shape[0] - h + 1)); ox = int(rng.integers(d.shape[1] - w + 1))
-            out += wgt * d[oy:oy + h, ox:ox + w]; total += wgt
-        return out / np.maximum(total, 1e-6)
+        p = max(8, int(round(patch / self.cell))); win = 2 * p
+        small = min(min(d.shape) for d in self.donors)
+        if win > small: p = small // 2; win = 2 * p
+        k = 0.5 - 0.5 * np.cos(2 * np.pi * (np.arange(win) + 0.5) / win)
+        W2 = np.outer(k, k)
+        out = np.zeros((h + 2 * win, w + 2 * win)); tot = np.zeros_like(out)
+        for y0 in range(0, h + win, p):
+            for x0 in range(0, w + win, p):
+                d = self.donors[int(rng.integers(len(self.donors)))]
+                oy = int(rng.integers(d.shape[0] - win + 1)); ox = int(rng.integers(d.shape[1] - win + 1))
+                t = d[oy:oy + win, ox:ox + win]
+                if rng.integers(2): t = t[::-1]
+                if rng.integers(2): t = t[:, ::-1]
+                t = np.rot90(t, int(rng.integers(4)))
+                out[y0:y0 + win, x0:x0 + win] += t * W2; tot[y0:y0 + win, x0:x0 + win] += W2
+        return (out / np.maximum(tot, 1e-6))[win:win + h, win:win + w]
 
     def apply(self, base, seed, strength=1.0, flat=0.45, steep=1.5, patch=160.0):
         """base plus quilted detail, scaled between `flat` on level ground and `steep` on slopes of 30 % and more."""
@@ -148,3 +150,97 @@ def layer_weights(z, cell, rules, noise=None):
     err = 255 - sum(q.values())
     q[names[0]] = np.clip(q[names[0]] + err, 0, 255)
     return {k: q[k].astype(np.uint8) for k in names}
+
+
+# ---------------------------------------------------------------- noise and landforms
+
+def _cubic(n, m):
+    """Sample positions and Catmull-Rom weights to read m samples across the n cells of an (n + 3)-point grid."""
+    x = np.linspace(1.0, n + 1.0, m)
+    i = np.minimum(np.floor(x).astype(np.int64), n); t = x - i
+    w = np.stack([((-t + 2) * t - 1) * t / 2, ((3 * t - 5) * t * t + 2) / 2, ((-3 * t + 4) * t + 1) * t / 2, (t - 1) * t * t / 2], axis=1)
+    return np.stack([i - 1, i, i + 1, i + 2], axis=1), w
+
+
+def noise(shape, cell, wavelength, rng):
+    """Smooth noise in about [-1, 1] whose bumps are about `wavelength` metres across."""
+    h, w = shape
+    ny = max(1, int(round(h * cell / wavelength))); nx = max(1, int(round(w * cell / wavelength)))
+    g = rng.standard_normal((ny + 3, nx + 3)) * 0.6
+    iy, wy = _cubic(ny, h); ix, wx = _cubic(nx, w)
+    rows = (g[iy] * wy[:, :, None]).sum(axis=1)
+    return (rows[:, ix] * wx[None, :, :]).sum(axis=2)
+
+
+def fbm(shape, cell, wavelength, octaves, rng, gain=0.5, ridged=False, erode=0.0):
+    """Octaves of noise, the first with bumps of `wavelength` metres, each next one half as wide.
+    ridged: sharp crests instead of round bumps. erode > 0: later octaves fade where the ground already slopes, which leaves
+    smooth valley floors and detailed slopes the way running water does (a cheap stand-in for erosion)."""
+    out = np.zeros(shape); amp = 1.0; tot = 0.0; gx = np.zeros(shape); gy = np.zeros(shape); wl = float(wavelength)
+    for _ in range(octaves):
+        n = noise(shape, cell, wl, rng)
+        if ridged: n = 1.0 - 2.0 * np.abs(np.clip(n, -1, 1))
+        if erode > 0:
+            dy, dx = np.gradient(n, cell)
+            gx += dx * wl * amp; gy += dy * wl * amp
+            n = n / (1.0 + erode * (gx * gx + gy * gy))
+        out += amp * n; tot += amp; amp *= gain; wl /= 2.0
+    return out / tot
+
+
+class Field:
+    """Coordinates of a square field in metres and the landform shapes drawn on it. Everything returns arrays of the
+    field's shape; heights are metres to add."""
+
+    def __init__(self, samples, size, rng):
+        self.n = samples; self.size = float(size); self.cell = self.size / (samples - 1); self.rng = rng
+        ax = np.linspace(0.0, self.size, samples)
+        self.X, self.Y = np.meshgrid(ax, ax)          # row = y
+        self.shape = (samples, samples)
+        self._wob = {}
+
+    def wobble(self, wavelength=120.0):
+        """A noise field shared by shapes so their outlines are not geometric."""
+        key = min((70.0, 110.0, 170.0, 260.0, 400.0), key=lambda k: abs(k - wavelength))      # a few shared fields, not one per shape
+        if key not in self._wob: self._wob[key] = noise(self.shape, self.cell, key, self.rng)
+        return self._wob[key]
+
+    def dist(self, x, y): return np.hypot(self.X - x, self.Y - y)
+
+    def hill(self, x, y, radius, height, plateau=0.0, wobble=0.28, sharp=1.6):
+        """A hill with an irregular outline. plateau 0..0.8 flattens the top; sharp > 1 steepens the flanks."""
+        d = self.dist(x, y) / radius * (1.0 + wobble * self.wobble(max(60.0, radius * 0.9)) + 0.5 * wobble * self.wobble(max(60.0, radius * 0.4)))
+        p = (1.0 - smoothstep(d, 0.0, 1.0)) ** sharp
+        if plateau > 0: p = np.minimum(p, 1.0 - plateau) / (1.0 - plateau)
+        return height * p
+
+    def segment(self, x0, y0, x1, y1):
+        """(distance to the segment, position along it 0..1)."""
+        dx, dy = x1 - x0, y1 - y0; L2 = dx * dx + dy * dy
+        t = np.clip(((self.X - x0) * dx + (self.Y - y0) * dy) / L2, 0.0, 1.0)
+        return np.hypot(self.X - (x0 + t * dx), self.Y - (y0 + t * dy)), t
+
+    def ridge(self, x0, y0, x1, y1, width, height, saddles=(), wobble=0.3, sharp=1.3, plateau=0.0):
+        """A ridge between two points. saddles: [(position 0..1, depth 0..1, half-length 0..1)] lower the crest there."""
+        d, t = self.segment(x0, y0, x1, y1)
+        d = d / width * (1.0 + wobble * self.wobble(max(60.0, width * 1.2)))
+        p = (1.0 - smoothstep(d, 0.0, 1.0)) ** sharp
+        if plateau > 0: p = np.minimum(p, 1.0 - plateau) / (1.0 - plateau)
+        crest = 0.8 + 0.2 * self.wobble(max(80.0, width * 2.0))
+        crest = crest * smoothstep(t, 0.0, 0.12) * (1.0 - smoothstep(t, 0.88, 1.0)) + 0.0
+        for pos, depth, half in saddles:
+            crest = crest * (1.0 - depth * (1.0 - smoothstep(np.abs(t - pos), 0.0, half)))
+        return height * p * crest
+
+    def chain(self, points, radius, height, gaps=(), plateau=0.0, sharp=1.6, jitter=0.3):
+        """A ridge or a hill mass built from overlapping hills along a line of points [(x, y), ...], so it has an uneven
+        crest and outline instead of a straight bar. gaps: [(position 0..1, depth 0..1, half-length 0..1)] lower it there."""
+        acc = np.zeros(self.shape); n = len(points)
+        for k, (x, y) in enumerate(points):
+            t = k / max(1, n - 1); h = height * float(self.rng.uniform(0.75, 1.1))
+            for pos, depth, half in gaps:
+                if abs(t - pos) < half: h *= (1.0 - depth * (1.0 - abs(t - pos) / half))
+            r = radius * float(self.rng.uniform(0.8, 1.25))
+            x += float(self.rng.uniform(-1, 1)) * radius * jitter; y += float(self.rng.uniform(-1, 1)) * radius * jitter
+            acc = np.maximum(acc, self.hill(x, y, r, h, plateau=plateau, sharp=sharp))
+        return blur_fast(acc, 7.0 / self.cell)

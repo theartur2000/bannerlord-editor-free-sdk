@@ -129,6 +129,37 @@ Not answered yet: generation time inside the game (the Python prototype takes 20
 rivers come out as dry valleys), trees and bushes (the flora layer is not painted yet), tactical markers for the battle AI,
 and a campaign battle (only Custom Battle was run).
 
+## 5b. Change of design (2026-10-10): the map is the rule book, not the shape
+
+Fields copied from the map's heights turned out open and gently rolling: a battle covers so little of the map that the
+patch is usually one slope. They also had no designed features. The demo now invents each field
+(`demos/battlefields/procgen.py`); `generate.py`, the literal version, stays as the earlier experiment.
+
+| The map decides (rules) | The generator invents, new for every battle |
+|---|---|
+| biome: plain, steppe, desert, swamp | the layout: ridge, valley, hill, river crossing, forest clearing, pass, coastal bluff, broken ground, mesas |
+| how rugged the land is | where the high ground, the chokepoints and the open lanes are |
+| whether there is a river, a lake or the sea, and on which side | the river's course and its fords |
+| how much forest | where the woods and the clearings are |
+
+How a field is composed:
+1. A layout is picked, weighted by the rules, and its landforms are drawn from chains of overlapping hills with uneven outlines.
+2. A frame of hills or mountains rises outside the play area; on a coast the sea side stays open.
+3. Real landforms and real small relief are lifted from shipped battlefields of the same biome and quilted over it.
+4. The ground where the armies deploy is levelled a little.
+5. Water: the river is cut with a flat bed, shallow at the fords, and nothing else is left below its level.
+6. Textures are painted by job (rock on steep ground, soil in hollows and on banks, grass variants, snow for winter), whatever the
+   template scene calls its layers.
+7. Forest is grown from the template's tree layer, kept off the deployment ground, cliffs and water.
+8. Rocks are placed the way the shipped battlefields place them: which rock, at what scale, how deep in the ground and how tilted
+   is measured from the shipped scenes of the biome (`catalog.rock_usage`). Designers bury them: three metres is typical.
+9. High ground and chokepoints get the markers the battle AI reads (TacticalPosition, TacticalRegion).
+
+In game (unmodified game plus GenFields): a ridge field and a river crossing loaded and were fought on; rocks, trees, tall
+grass and the river's water render. Known defects: rocks of the first run stood too large and too high (fixed by the
+measured placement, to be confirmed), a test camera high above a scene with a water level shows water over everything
+(the normal camera does not), spawn sides are not yet checked for fairness.
+
 ## 6. Steps
 
 | Step | What | Proof |

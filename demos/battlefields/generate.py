@@ -30,31 +30,55 @@ PATHS = 4                 # spawn paths through the middle, one per 45 degrees
 def scene_dir(module, name): return os.path.join(config.GAME, "Modules", module, "SceneObj", name)
 
 
-def make(center, name, out_dir, patch=PATCH, log=print):
+WET = (8, 10, 11, 18, 19, 22)   # campaign terrain types that are water: lake, water, river, coastal sea, open sea, non-navigable river
+FORD = 6
+FOREST = 4
+
+
+def make(center, name, out_dir, patch=PATCH, flora=True, water=True, log=print):
     t0 = time.time()
     wm = worldmap.WorldMap()
     tpl = scenebuild.Template(scene_dir(*TEMPLATE))
     assert abs(tpl.size[0] - FIELD) < 1e-6, tpl.size
     n = tpl.samples[0]; cell = tpl.cell
     seed = zlib.crc32(("%.2f,%.2f" % center).encode())
+    rng = np.random.default_rng(seed + 7)
+    types = wm.types_patch(center, patch, n)
 
     # 1. the map's own shape
     k = FIELD / patch
     vertical = 0.4 * k * math.sqrt(patch / 12.0)
     base = (wm.patch(center, patch, n) - worldmap.SEA_LEVEL) * vertical
-    water = base < 0.0
+    sea = base < 0.0
     # 2. small relief from shipped battlefields
     bank = terraform.DetailBank(cell)
     for mod, nm in DONORS:
         d = scene_dir(mod, nm)
         bank.add(terrain.Terrain(os.path.join(d, "terrain.bin")).heightmap(terrain.scene_terrain_info(os.path.join(d, "scene.xscene"))))
     z = bank.apply(base, seed)
-    z = z - z[~water].min() + 40.0 if (~water).any() else z + 40.0        # shipped fields sit some tens of metres up
-    log("ground: relief %.0f m, water %.1f %%, %.1f s" % (z.max() - z.min(), 100 * water.mean(), time.time() - t0))
 
-    # 3. texture layers by rule, on the template's own layers
+    # 3. water. A scene has one water level, so the river, lake or sea of the map is levelled: its channel is cut to a flat
+    # bed under the level (shallow where the map has a ford), and no other ground is left below the level.
+    wet = np.isin(types, WET) | sea; ford = (types == FORD) & ~wet
+    level = None; deep = np.zeros(z.shape, bool); under = np.zeros(z.shape, bool)
+    if water and (wet | ford).mean() > 0.004:
+        chan = (wet | ford).astype(np.float64)
+        soft = terraform.blur_fast(chan, 9.0 / cell)                          # 0 on dry land, 1 mid-channel
+        level = float(np.median(z[wet | ford]))
+        depth = terraform.blur_fast(np.where(wet, 2.4, np.where(ford, 0.45, 0.0)), 6.0 / cell)
+        inside = terraform.smoothstep(soft, 0.35, 0.75)
+        z = z * (1 - inside) + (level - depth) * inside
+        dry = level + 0.6
+        outside = 1 - terraform.smoothstep(soft, 0.05, 0.35)
+        z = np.where(z < dry, z + (dry - z) * outside, z)
+        under = z < level - 0.05; deep = z < level - 0.9
+    off = 40.0 - float(z.min())                                               # shipped fields sit some tens of metres up
+    z = z + off
+    if level is not None: level += off
+    log("ground: relief %.0f m, water %s, %.1f s" % (z.max() - z.min(), ("level %.1f m over %.1f %% (deep %.1f %%)" % (level, 100 * under.mean(), 100 * deep.mean())) if level is not None else "none", time.time() - t0))
+
+    # 4. texture layers by rule, on the layers of the template
     names = tpl.layer_names; sl = terraform.slope(terraform.blur_fast(z, 1.5), cell)
-    rng = np.random.default_rng(seed + 7)
     noise = terraform.fbm_field(z.shape, rng, 9, 4); noise2 = terraform.fbm_field(z.shape, rng, 24, 3)
     curve = z - terraform.blur_fast(z, 10)                                   # negative in hollows
     def L(nm): return names.index(nm) if nm in names else None
@@ -67,28 +91,39 @@ def make(center, name, out_dir, patch=PATCH, log=print):
     paint("grass", terraform.smoothstep(noise2, 0.0, 0.5) * (1 - terraform.smoothstep(sl, 0.2, 0.45)))
     paint("dry_ground", terraform.smoothstep(-noise, 0.15, 0.6) * (1 - terraform.smoothstep(sl, 0.3, 0.55)))
     paint("soil", terraform.smoothstep(-curve, 0.25, 0.9) * terraform.smoothstep(sl, 0.08, 0.25))
-    paint("flow", terraform.smoothstep(-curve, 0.6, 1.6))
+    wetground = terraform.blur_fast(under.astype(np.float64), 3.0 / cell) if level is not None else np.zeros(z.shape)
+    paint("flow", np.maximum(terraform.smoothstep(-curve, 0.6, 1.6), terraform.smoothstep(wetground, 0.15, 0.6)))   # bare earth in hollows, on the river bed and its banks
     paint("base_rock", terraform.smoothstep(sl, 0.45, 0.70))
     paint("hard_rock", terraform.smoothstep(sl, 0.75, 1.05))
     paint("base_snow", 1 - terraform.smoothstep(sl, 0.45, 0.7))               # enabled in winter only
     paint("detail_snow", (1 - terraform.smoothstep(sl, 0.3, 0.6)) * terraform.smoothstep(noise, -0.2, 0.4))
+    # 5. trees: the flora layer of the template where the map has forest, with a ragged edge; none in water or on cliffs
+    forest = np.zeros(z.shape)
+    if flora and tpl.flora_layers:
+        f = terraform.blur_fast((types == FOREST).astype(np.float64), 14.0 / cell)
+        forest = terraform.smoothstep(f + 0.22 * noise2, 0.42, 0.62) * (1 - terraform.smoothstep(sl, 0.5, 0.75))
+        forest = forest * (1 - terraform.smoothstep(wetground, 0.02, 0.2))
+        masks[tpl.flora_layers[0]] = m8(forest)
+        log("forest: %.1f %% of the field (map: %.1f %%), flora layer %s" % (100 * (forest > 0.5).mean(), 100 * (types == FOREST).mean(), names[tpl.flora_layers[0]]))
 
-    # 4. border, spawn paths
+    # 6. border, spawn paths (the four bearings with the least deep water, forest and steep ground on them)
     c = FIELD / 2
-    def ground(x, y): return float(z[int(round(y / cell)), int(round(x / cell))])
+    def at(a, x, y): return a[int(round(y / cell)), int(round(x / cell))]
     border = [(c + BORDER_RADIUS * math.cos(a), c + BORDER_RADIUS * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 32, endpoint=False)]
-    paths = []
-    for p in range(PATHS):
-        a = math.pi * p / PATHS; pts = []
-        for s in np.linspace(-0.72, 0.72, 7):
-            x = c + BORDER_RADIUS * s * math.cos(a); y = c + BORDER_RADIUS * s * math.sin(a)
-            pts.append((x, y, ground(x, y)))
-        paths.append(pts)
-    walk = scenebuild.polygon_mask(border, z.shape, cell) & ~water
+    cands = []
+    for p in range(8):
+        a = math.pi * p / 8; pts = []; bad = 0.0
+        for q in np.linspace(-0.72, 0.72, 7):
+            x = c + BORDER_RADIUS * q * math.cos(a); y = c + BORDER_RADIUS * q * math.sin(a)
+            pts.append((x, y, float(at(z, x, y)))); bad += 3.0 * bool(at(deep, x, y)) + float(at(forest, x, y)) + 2.0 * (float(at(sl, x, y)) > 0.5)
+        ends = 4.0 * (bool(at(deep, *pts[0][:2])) + bool(at(deep, *pts[-1][:2])))
+        cands.append((bad + ends, p, pts))
+    paths = [t[2] for t in sorted(sorted(cands, key=lambda t: t[0])[:PATHS], key=lambda t: t[1])]
+    walk = scenebuild.polygon_mask(border, z.shape, cell) & ~deep
 
-    info = scenebuild.build(tpl, out_dir, name, z, masks, entities=(), spawn_paths=paths, border=border, walkable=walk, log=log)
-    info.update({"seed": seed, "center": center, "patch": patch, "terrain_mix": wm.terrain_mix(center, patch), "water": water,
-                 "masks": masks, "border": border, "paths": paths, "layer_names": names, "seconds": time.time() - t0})
+    info = scenebuild.build(tpl, out_dir, name, z, masks, entities=(), spawn_paths=paths, border=border, walkable=walk, water_level=level, log=log)
+    info.update({"seed": seed, "center": center, "patch": patch, "terrain_mix": wm.terrain_mix(center, patch), "water": under, "forest": forest,
+                 "masks": masks, "border": border, "paths": paths, "layer_names": names, "seconds": time.time() - t0, "water_level": level})
     log("scene %s written to %s in %.1f s" % (name, out_dir, info["seconds"]))
     return info
 
@@ -110,6 +145,8 @@ def preview(info, path, size=1100):
             if i in info["masks"]:
                 a = (info["masks"][i].astype(float) / 255)[..., None]; col = col * (1 - a) + np.array(c) * a
     img = col * (0.35 + 0.75 * sh[..., None])
+    fa = np.clip(info.get("forest", 0), 0, 1)[..., None] * 0.75
+    img = img * (1 - fa) + np.array([34, 70, 40]) * fa * (0.5 + 0.6 * sh[..., None])
     img[info["water"]] = img[info["water"]] * 0.3 + np.array([40, 84, 136]) * 0.7
     k = (n - 1) // info["nav_cells"].shape[0]
     nav = np.kron(info["nav_cells"], np.ones((k, k), bool)); navf = np.zeros(z.shape, bool); navf[:nav.shape[0], :nav.shape[1]] = nav
@@ -130,7 +167,8 @@ if __name__ == "__main__":
     ap.add_argument("x", type=float); ap.add_argument("y", type=float)
     ap.add_argument("--name", default="gen_field"); ap.add_argument("--out", default=None, help="scene folder (default: <SDK stage>/scenes/<name>)")
     ap.add_argument("--patch", type=float, default=PATCH); ap.add_argument("--preview", default=None)
+    ap.add_argument("--no-flora", action="store_true"); ap.add_argument("--no-water", action="store_true")
     a = ap.parse_args()
     out = a.out or os.path.join(config.SDK_STAGE_DIR, "scenes", a.name)
-    info = make((a.x, a.y), a.name, out, a.patch)
+    info = make((a.x, a.y), a.name, out, a.patch, flora=not a.no_flora, water=not a.no_water)
     if a.preview: preview(info, a.preview); print("preview", a.preview)

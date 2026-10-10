@@ -8,6 +8,8 @@
 //   swap=<id>    at the main menu, overwrite the files of the scene named by scene= (installed before the game started)
 //                with the staged scene <id>: the test of a pool of scene folders rewritten before a battle
 //   tod=<hour>   time of day of the battle (the nearest one Custom Battle offers)
+//   views        before anything else in the battle, look at the scene from the viewpoints listed in the scene folder's
+//                views.txt (name, eye x y z, target x y z per line) and take a screenshot of each
 //   fight        finish deployment, order the player's side to charge, let the AI play the player
 //   secs=<n>     seconds of battle before quitting (default 60)
 //   quit         quit the game at the end (without it the battle stays open)
@@ -23,6 +25,7 @@ using TaleWorlds.Engine;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.MountAndBlade.CustomBattle;
+using TaleWorlds.MountAndBlade.View.Screens;
 using TaleWorlds.ScreenSystem;
 using Path = System.IO.Path;
 
@@ -152,7 +155,8 @@ namespace GenFields
     public class AutoMissionLogic : MissionLogic
     {
         static readonly float[] ShotTimes = { 3f, 8f, 14f, 22f, 32f, 45f, 58f };
-        float _t, _fightT = -1f, _nextCount;
+        float _t, _fightT = -1f, _nextCount, _viewT;
+        System.Collections.Generic.List<string[]> _views; int _view = -1; bool _viewShot; Camera _cam;
         bool _deployDone, _charged, _ended;
         int _shot, _spawnedUs, _spawnedThem;
         string _shotDir;
@@ -165,6 +169,49 @@ namespace GenFields
             _shotDir = Path.Combine(home, "out", "genfields_shots");
             try { Directory.CreateDirectory(_shotDir); } catch { }
             Log.Write("mission on scene " + Mission.SceneName);
+            if (AutoTest.Has("views"))
+            {
+                string f = Path.Combine(TaleWorlds.ModuleManager.ModuleHelper.GetModuleFullPath(SubModule.ModuleId), "SceneObj", Mission.SceneName, "views.txt");
+                _views = new System.Collections.Generic.List<string[]>();
+                if (File.Exists(f))
+                    foreach (string line in File.ReadAllLines(f))
+                    {
+                        string[] w = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (w.Length == 7) _views.Add(w);
+                    }
+                Log.Write("views: " + _views.Count + " from " + f);
+            }
+        }
+
+        static float F(string s) => float.Parse(s, CultureInfo.InvariantCulture);
+
+        // true while the viewpoints are being shown: each one for 2.5 s, its screenshot after 1.5 s
+        bool TickViews(float dt)
+        {
+            if (_views == null || _view >= _views.Count) return false;
+            var ms = ScreenManager.TopScreen as MissionScreen;
+            if (ms == null) return true;
+            _viewT += dt;
+            if (_view < 0 || _viewT > 2.5f)
+            {
+                _view++; _viewT = 0f; _viewShot = false;
+                if (_view >= _views.Count) { ms.CustomCamera = null; Log.Write("views done"); return false; }
+                string[] w = _views[_view];
+                if (_cam == null) _cam = Camera.CreateCamera();
+                _cam.SetFovVertical(65f * (float)Math.PI / 180f, Screen.AspectRatio, 0.1f, 12500f);     // the mission screen only sets a custom camera's projection while zooming
+                var eye = new Vec3(F(w[1]), F(w[2]), F(w[3])); var tgt = new Vec3(F(w[4]), F(w[5]), F(w[6]));
+                Vec3 up = (Math.Abs(eye.x - tgt.x) + Math.Abs(eye.y - tgt.y) < 3f) ? new Vec3(0f, 1f, 0f) : new Vec3(0f, 0f, 1f);
+                _cam.LookAt(eye, tgt, up);
+                ms.CustomCamera = _cam;
+            }
+            else if (!_viewShot && _viewT > 1.5f)
+            {
+                _viewShot = true;
+                string f = Path.Combine(_shotDir, Mission.SceneName + "_view" + _view + "_" + _views[_view][0] + ".bmp");
+                Utilities.TakeScreenshot(f);
+                Log.Write("view " + _views[_view][0] + " -> " + f);
+            }
+            return true;
         }
 
         public override void OnAgentBuild(Agent agent, Banner banner)
@@ -206,6 +253,7 @@ namespace GenFields
                               + ", navmesh faces " + Mission.Scene.GetNavMeshFaceCount());
                 }
                 if (_fightT < 0f) return;
+                if (TickViews(dt)) { _fightT = _t; return; }      // the battle clock starts after the viewpoints
                 float ft = _t - _fightT;
                 if (AutoTest.Has("fight") && !_charged && ft > 4f && Mission.PlayerTeam != null)
                 {

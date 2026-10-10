@@ -97,7 +97,7 @@ def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
 
 
 def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths=(), border=(), walkable=None,
-          nav_step=4.0, nav_max_slope=0.75, author="bannerlord-editor-free-sdk", log=print):
+          nav_step=4.0, nav_max_slope=0.75, water_level=None, author="bannerlord-editor-free-sdk", log=print):
     """Writes the scene folder out_dir for a scene called `name`.
 
     heights      float array in metres, shape template.samples (row = y)
@@ -106,6 +106,7 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
     spawn_paths  list of point lists [(x, y, z), ...]; they become spawn_path_00, spawn_path_01, ...
     border       [(x, y), ...]: the walkable area's corners (the game sorts them around their centre)
     walkable     bool array: where the navmesh may go (default: inside the border)
+    water_level  metres: the one water surface of the scene (None: the setting of the template, usually no water)
     Returns a dict of what was written."""
     t = template; masks = dict(masks or {})
     assert heights.shape == t.samples, (heights.shape, t.samples)
@@ -148,6 +149,11 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
             node.set("layer_is_used_mask_" + season, sum(1 << i for i in range(L) if present[k][i] and t.enabled[season][i]))
         node.set("height_complexity", "%.3f" % min(1.0, 1.1 * float(terraform.slope(zz, cell).mean())))
         node.set("min_height", "%.3f" % float(zz.min())); node.set("max_height", "%.3f" % float(zz.max()))
+    if water_level is not None:
+        wp = doc.root.find("environment_properties").find("water_properties")
+        for pr in wp.elements("property"):
+            if pr.get("name") == "water_level": pr.set("value", "%.3f" % water_level)
+            elif pr.get("name") == "water_exists": pr.set("value", "true")
     ents = doc.entities_element()
     for e in list(ents.elements()): ents.remove(e)
     def ground(x, y):
