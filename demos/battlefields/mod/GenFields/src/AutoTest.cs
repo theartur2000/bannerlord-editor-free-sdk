@@ -192,6 +192,7 @@ namespace GenFields
             var ms = ScreenManager.TopScreen as MissionScreen;
             if (ms == null) return true;
             _viewT += dt;
+            if (_cam != null && _view >= 0) { MatrixFrame fr = _cam.Frame; Mission.SetCameraFrame(ref fr, 1f); }   // the mission culls and streams the terrain around this frame; the screen only passes it for its own camera
             if (_view < 0 || _viewT > 2.5f)
             {
                 _view++; _viewT = 0f; _viewShot = false;
