@@ -1,0 +1,114 @@
+"""The campaign world map as data: its height field, its settlements, and the patch of land around any map position.
+
+The world map is an ordinary scene (Modules/SandBox/SceneObj/Main_map on game v1.4.8.119303) whose terrain.bin holds
+16 x 16 nodes of 53 map units, 4097 x 4097 height samples: one sample every 0.207 units. Campaign positions (a
+settlement's posX / posY, a party's position) are the same x / y as the terrain's.
+
+    wm = worldmap.WorldMap()                      # reads the installed game's map
+    z = wm.patch((205.0, 440.0), size=12.0)       # the land around that position, as a height array
+"""
+import os, re, sys, zlib
+
+import numpy as np
+
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config, terrain
+else:
+    from . import config, terrain
+
+MAP_SCENE = ("SandBox", "Main_map")
+SEA_LEVEL = 0.9   # map units. An estimate: the sea floor is at 0.0, the shore starts near 0.3, the lowest town stands at 1.65
+
+
+def _cubic_weights(src, dst, lo, hi):
+    """Catmull-Rom sample positions and weights to read dst samples covering [lo, hi] (in source sample units)."""
+    x = np.linspace(lo, hi, dst)
+    i = np.floor(x).astype(np.int64); t = x - i
+    w = np.stack([((-t + 2) * t - 1) * t / 2, ((3 * t - 5) * t * t + 2) / 2, ((-3 * t + 4) * t + 1) * t / 2, (t - 1) * t * t / 2], axis=1)
+    idx = np.clip(np.stack([i - 1, i, i + 1, i + 2], axis=1), 0, src - 1)
+    return idx, w
+
+
+def resample(a, x0, x1, y0, y1, nx, ny):
+    """Bicubic (Catmull-Rom) read of the window [x0, x1] x [y0, y1], given in sample units of a (row = y), as (ny, nx)."""
+    ix, wx = _cubic_weights(a.shape[1], nx, x0, x1)
+    iy, wy = _cubic_weights(a.shape[0], ny, y0, y1)
+    rows = (a[iy] * wy[:, :, None]).sum(axis=1)            # (ny, width)
+    return (rows[:, ix] * wx[None, :, :]).sum(axis=2)      # (ny, nx)
+
+
+def fbm(shape, seed, octaves=5, base=8, gain=0.5):
+    """Smooth fractal noise in about [-1, 1]: octaves of random grids, each read bicubically. Same seed, same field."""
+    rng = np.random.default_rng(seed); out = np.zeros(shape); amp = 1.0; total = 0.0; n = base
+    for _ in range(octaves):
+        g = rng.standard_normal((n + 3, n + 3)) * 0.5
+        out += amp * resample(g, 1, n + 1, 1, n + 1, shape[1], shape[0])
+        total += amp; amp *= gain; n *= 2
+    return out / total
+
+
+class WorldMap:
+    def __init__(self, scene_dir=None):
+        self.dir = scene_dir or os.path.join(config.GAME, "Modules", MAP_SCENE[0], "SceneObj", MAP_SCENE[1])
+        self.info = terrain.scene_terrain_info(os.path.join(self.dir, "scene.xscene"))
+        self.cell = self.info["node_size"] / 256.0
+        self.size = (self.info["nx"] * self.info["node_size"], self.info["ny"] * self.info["node_size"])
+        self._z = None
+
+    @property
+    def heights(self):
+        """The map's height field in map units, (4097, 4097), row = y."""
+        if self._z is None:
+            self._z = terrain.Terrain(os.path.join(self.dir, "terrain.bin")).heightmap(self.info)
+        return self._z
+
+    def height_at(self, x, y):
+        return float(resample(self.heights, x / self.cell, x / self.cell, y / self.cell, y / self.cell, 1, 1)[0, 0])
+
+    def patch(self, center, size=12.0, samples=1537):
+        """The square of `size` map units around `center`, read bicubically to samples x samples, in map units of height."""
+        cx, cy = center; h = size / 2.0
+        return resample(self.heights, (cx - h) / self.cell, (cx + h) / self.cell, (cy - h) / self.cell, (cy + h) / self.cell, samples, samples)
+
+    def battlefield_heights(self, center, size=12.0, field=1200.0, samples=1537, vertical=None, detail=1.0, sea=SEA_LEVEL):
+        """A first sketch of a battlefield's height field in metres for a map position: the patch scaled up to a square of
+        `field` metres, heights scaled by `vertical` (default: 40 % of the horizontal factor, which keeps slopes fightable),
+        plus generated detail below the map's resolution. Returns (heights, water) where water marks samples under the
+        estimated sea level; heights are metres above it. The seed comes from the position, so the same place gives the same field."""
+        z = self.patch(center, size, samples)
+        k = field / size
+        vertical = vertical if vertical is not None else 0.4 * k
+        water = z < sea
+        zm = (z - sea) * vertical
+        seed = zlib.crc32(("%.2f,%.2f" % (round(center[0], 2), round(center[1], 2))).encode())
+        cell = field / (samples - 1)
+        gy, gx = np.gradient(zm, cell); slope = np.clip(np.hypot(gx, gy), 0, 1.5)
+        rough = 0.6 + 4.0 * slope                           # flats stay calm, slopes get broken up
+        zm = zm + detail * (rough * 2.2 * fbm(z.shape, seed, 6, 6) + 0.25 * fbm(z.shape, seed + 1, 4, 96))
+        return zm, water
+
+    def settlements(self):
+        """[(id, name, x, y)] from the SandBox settlements file."""
+        path = os.path.join(config.GAME, "Modules", "SandBox", "ModuleData", "settlements.xml")
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f: s = f.read()
+        out = []
+        for m in re.finditer(r"<Settlement\b[^>]*>", s):
+            a = dict(re.findall(r'(\w+)="([^"]*)"', m.group()))
+            if "posX" in a and "posY" in a:
+                out.append((a.get("id"), re.sub(r"^\{=[^}]*\}", "", a.get("name", "")), float(a["posX"]), float(a["posY"])))
+        return out
+
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if len(a) >= 3 and a[0] == "patch":
+        from PIL import Image
+        wm = WorldMap(); x, y = float(a[1]), float(a[2]); size = float(a[4]) if len(a) > 4 else 12.0
+        z, water = wm.battlefield_heights((x, y), size)
+        Image.fromarray(terrain.hillshade(z, 1200.0 / (z.shape[0] - 1))).save(a[3] if len(a) > 3 else "patch.png")
+        print("relief %.1f m, water %.1f %%" % (z.max() - z.min(), 100.0 * water.mean()))
+    else:
+        wm = WorldMap(); st = wm.settlements()
+        print("map %s units, cell %.3f, %d settlements with a position" % (wm.size, wm.cell, len(st)))
+        print("worldmap.py patch <x> <y> [out.png] [size in map units]")

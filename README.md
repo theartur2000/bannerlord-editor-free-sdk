@@ -124,6 +124,9 @@ python sdk/install.py status
 | `sdk/tpac.py` | the `.tpac` / `.rdc` reader and writer: textures (BC1, BC3, BC4, BC5, BC7 mode 6, RGBA8), materials, animations from FBX, clips, clip caches; `texture`, `tex`, `material`, `mtl`, `retex`, `anim`, `clip`, `clip-cache`, `optanim`, `owner`, `anims` |
 | `sdk/sdk_mesh.py` | FBX to metamesh packages and vertex-stream caches; `mesh`, `obj` |
 | `sdk/sdk_skeleton.py` | skeleton packages from FBX or glTF, Native skeleton readers |
+| `sdk/scene.py` | `scene.xscene` and other game XML read and written without changing a byte that was not edited; entities listed, added, moved, removed; `check`, `list` |
+| `sdk/terrain.py` | `terrain.bin` reader and writer: heights, normals, layer weights and index maps, physics materials; `info`, `check`, `relief` |
+| `sdk/worldmap.py` | the campaign map as data: height field, settlements, the patch of land around a map position; `patch` |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |
 | `sdk/validate.py` | validators: stage, skeleton, clip, `project.mbproj` registration, monster bones |
 | `sdk/clip_partners.py` | the clip partner rule against Native's clips |
