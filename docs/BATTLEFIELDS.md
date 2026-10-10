@@ -1,4 +1,7 @@
-# Generated battlefields: research and design
+# Generated battlefields: research and design for the first tech demo
+
+This is the design of a standalone mod, a tech demo built with the SDK. It is not an SDK feature. It lives here until the
+demo has its own home, because it sets the order in which the SDK grows.
 
 Written 2026-10-10. Question: can a unique battlefield be generated right before each battle, quickly, from the spot on
 the world map where the armies met, so the battle feels like it happens in that place?

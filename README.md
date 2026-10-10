@@ -37,8 +37,8 @@ mod that runs in game; this packaged copy has passed the self-test but has not i
 
 ## Where this is going
 This repository is growing from an asset SDK into a headless Bannerlord editor: scenes, terrain, a bridge into the running engine,
-and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The first target is battlefields generated
-from the spot on the world map where a battle starts: [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md). Both are plans, not features yet.
+and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The first tech demo to be built with it is a standalone mod that generates
+each battlefield from the spot on the world map where the battle starts: [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md). Both are plans, not features yet.
 
 ## Background reading
 The formats and the engine rules behind the validators are written up in the
