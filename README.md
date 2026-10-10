@@ -127,6 +127,10 @@ python sdk/install.py status
 | `sdk/scene.py` | `scene.xscene` and other game XML read and written without changing a byte that was not edited; entities listed, added, moved, removed; `check`, `list` |
 | `sdk/terrain.py` | `terrain.bin` reader and writer: heights, normals, layer weights and index maps, physics materials; `info`, `check`, `relief` |
 | `sdk/worldmap.py` | the campaign map as data: height field, settlements, the patch of land around a map position; `patch` |
+| `sdk/navmesh.py` | `navmesh.bin` reader and writer: vertices, edges, faces with their group, value and flags; `info`, `check` |
+| `sdk/terraform.py` | building blocks for making terrain: filters, slope, small relief quilted from donor terrains, layer masks |
+| `sdk/scenebuild.py` | a complete scene folder from arrays, with a shipped scene as the template for layers and atmosphere |
+| `demos/battlefields/` | tech demo built with the SDK, not part of it: a battlefield generated from a world map position, and the GenFields test module |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |
 | `sdk/validate.py` | validators: stage, skeleton, clip, `project.mbproj` registration, monster bones |
 | `sdk/clip_partners.py` | the clip partner rule against Native's clips |

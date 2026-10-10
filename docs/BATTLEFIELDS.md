@@ -111,6 +111,24 @@ Plan: prove it with Python, then port the battlefield path to C# once the format
 Also open: the per-scene terrain shader header (28 KB in `ShaderCache`), whether the navmesh the battle AI expects needs
 region and id data beyond the polygons, and how much the tactical markers matter to the AI in practice.
 
+## 5a. Results so far (2026-10-10, game v1.4.8.119303)
+
+Run with the unmodified game plus only the GenFields demo module, unattended, through the SDK harness.
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does the game accept a scene the SDK wrote from arrays (terrain, navmesh, scene file)? | Yes | Two generated fields (the land around Varagos Castle and around Zeonica) loaded in Custom Battle; 200 against 200 troops spawned on the generated spawn paths, stood on the ground (the engine's ground height under the player equals the written height), the engine reported the written navmesh face count, both sides marched and fought; no crash |
+| Does the engine load a scene folder created after the game started? | No | Copying a new scene folder into the module at the main menu and starting a battle on it crashed in the engine's XML loader (+0x730550, a missing-file read). The same scene installed before startup works |
+| Can a scene folder that existed at startup be rewritten while the game runs? | Yes | One scene was installed, its files were overwritten at the main menu with another field, and the battle loaded the new one (the navmesh face count was the swapped-in field's) |
+| Does the SDK's LZ4 output, which differs from the game's, load? | Yes | Same runs |
+| Is a light bake needed? | No | The fields are lit and shadowed correctly at noon and at dusk without one |
+
+So the design uses a pool: a fixed set of scene folders installed with the mod, rewritten before each battle.
+
+Not answered yet: generation time inside the game (the Python prototype takes 20 to 45 s), rivers and lakes (the map's
+rivers come out as dry valleys), trees and bushes (the flora layer is not painted yet), tactical markers for the battle AI,
+and a campaign battle (only Custom Battle was run).
+
 ## 6. Steps
 
 | Step | What | Proof |
