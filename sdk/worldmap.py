@@ -13,11 +13,14 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import config, terrain
+    import config, terrain, navmesh
 else:
-    from . import config, terrain
+    from . import config, terrain, navmesh
 
 MAP_SCENE = ("SandBox", "Main_map")
+TERRAIN_TYPES = {1: "Plain", 2: "Desert", 3: "Snow", 4: "Forest", 5: "Steppe", 6: "Fording", 7: "Mountain", 8: "Lake", 10: "Water",
+                 11: "River", 13: "Canyon", 14: "RuralArea", 15: "Swamp", 16: "Dune", 17: "Bridge", 18: "CoastalSea", 19: "OpenSea",
+                 20: "Beach", 21: "Cliff", 22: "NonNavigableRiver", 23: "LandRestriction", 24: "SeaRestriction", 25: "UnderBridge"}
 SEA_LEVEL = 0.9   # map units. An estimate: the sea floor is at 0.0, the shore starts near 0.3, the lowest town stands at 1.65
 
 
@@ -54,7 +57,7 @@ class WorldMap:
         self.info = terrain.scene_terrain_info(os.path.join(self.dir, "scene.xscene"))
         self.cell = self.info["node_size"] / 256.0
         self.size = (self.info["nx"] * self.info["node_size"], self.info["ny"] * self.info["node_size"])
-        self._z = None
+        self._z = None; self._types = None
 
     @property
     def heights(self):
@@ -87,6 +90,40 @@ class WorldMap:
         rough = 0.6 + 4.0 * slope                           # flats stay calm, slopes get broken up
         zm = zm + detail * (rough * 2.2 * fbm(z.shape, seed, 6, 6) + 0.25 * fbm(z.shape, seed + 1, 4, 96))
         return zm, water
+
+    def terrain_types(self, resolution=2048):
+        """The campaign terrain type of every spot as a (resolution, resolution) uint8 grid (row = y), 0 where the map has
+        no navmesh (deep sea, map border). Read from the map's navmesh: each face carries a TaleWorlds.Core.TerrainType."""
+        if self._types is None or self._types.shape[0] != resolution:
+            nm = navmesh.NavMesh(os.path.join(self.dir, "navmesh.bin"))
+            g = np.zeros((resolution, resolution), np.uint8)
+            sx = resolution / self.size[0]; sy = resolution / self.size[1]
+            V = nm.vertices[:, :2] * np.array([sx, sy], np.float32)
+            for (vs, _), group in zip(nm.faces, nm.face_group):
+                p = V[list(vs)]
+                x0 = max(0, int(np.floor(p[:, 0].min()))); x1 = min(resolution - 1, int(np.ceil(p[:, 0].max())))
+                y0 = max(0, int(np.floor(p[:, 1].min()))); y1 = min(resolution - 1, int(np.ceil(p[:, 1].max())))
+                if x1 < x0 or y1 < y0: continue
+                xx, yy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+                inside = np.ones(xx.shape, bool)
+                for i in range(len(vs)):
+                    a = p[i]; b = p[(i + 1) % len(vs)]
+                    inside &= ((b[0] - a[0]) * (yy - a[1]) - (b[1] - a[1]) * (xx - a[0])) >= -1e-4
+                g[y0:y1 + 1, x0:x1 + 1][inside] = group
+            self._types = g
+        return self._types
+
+    def terrain_type_at(self, x, y):
+        g = self.terrain_types(); r = g.shape[0]
+        return int(g[min(r - 1, max(0, int(y / self.size[1] * r))), min(r - 1, max(0, int(x / self.size[0] * r)))])
+
+    def terrain_mix(self, center, size=12.0):
+        """{terrain type name: share} of the square of `size` map units around `center`."""
+        g = self.terrain_types(); r = g.shape[0]; cx, cy = center; h = size / 2
+        x0 = max(0, int((cx - h) / self.size[0] * r)); x1 = min(r, int((cx + h) / self.size[0] * r) + 1)
+        y0 = max(0, int((cy - h) / self.size[1] * r)); y1 = min(r, int((cy + h) / self.size[1] * r) + 1)
+        v, c = np.unique(g[y0:y1, x0:x1], return_counts=True)
+        return {TERRAIN_TYPES.get(int(k), "none" if k == 0 else str(k)): round(float(n) / c.sum(), 3) for k, n in sorted(zip(v, c), key=lambda t: -t[1])}
 
     def settlements(self):
         """[(id, name, x, y)] from the SandBox settlements file."""
