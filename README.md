@@ -35,6 +35,11 @@ Written against Bannerlord v1.4.8.119303 (Steam, Windows, single player). Other 
 verified by byte-identical round trips against the game's own files (see "Self-test"). The original scripts built a large
 mod that runs in game; this packaged copy has passed the self-test but has not itself been run in the game yet.
 
+## Where this is going
+This repository is growing from an asset SDK into a headless Bannerlord editor: scenes, terrain, a bridge into the running engine,
+and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The first target is battlefields generated
+from the spot on the world map where a battle starts: [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md). Both are plans, not features yet.
+
 ## Background reading
 The formats and the engine rules behind the validators are written up in the
 [universal-modder](https://github.com/rehan-remade/universal-modder) knowledge base:
