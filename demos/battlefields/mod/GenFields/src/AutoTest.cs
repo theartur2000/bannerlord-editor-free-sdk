@@ -2,6 +2,7 @@
 //
 // When the environment variable BANNERLORD_AUTOTEST is 1 and Modules/GenFields/autostart.txt exists, the words in that file
 // are run and the game quits by itself:
+//   campaign     a campaign battle instead of a Custom Battle (CampaignTest.cs); scene= and tod= do not apply
 //   scene=<id>   the Custom Battle map to fight on (a scene listed in ModuleData/genfields_custom_battle_scenes.xml)
 //   late=<id>    copy that scene from the SDK's stage folder into the module at the main menu, after the game has started
 //                (the test of loading a scene folder that did not exist at startup; install it with install.py --late)
@@ -75,6 +76,7 @@ namespace GenFields
                 string name = top == null ? "null" : top.GetType().Name;
                 if (name != _lastScreen) { Log.Write("screen -> " + name); _lastScreen = name; }
                 if (GameStateManager.Current?.ActiveState is VideoPlaybackState vs) { vs.OnVideoFinished(); Log.Write("video skipped"); }
+                if (Has("campaign")) { CampaignTest.Tick(dt, name); return; }
                 if (_stage == 0 && name.Contains("Initial") && _stageT > 4f)
                 {
                     _stage = 1; _stageT = 0;

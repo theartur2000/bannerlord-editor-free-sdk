@@ -462,7 +462,7 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
             k = int(rng.integers(len(fy))); x, y = fx[k] * cell, fy[k] * cell
             entities.append({"prefab": "TacticalRegion", "position": (x, y, float(z[fy[k], fx[k]])), "scripts": {"TacticalRegion": {"radius": "35.000", "tacticalRegionType": "Forest"}}})
 
-    # border and spawn paths: the axis first, then the other bearings with the least water, forest and steep ground
+    # border and spawn paths: the axis first, then other bearings with little water, forest and steep ground on them
     border = [(C + PLAY * math.cos(a), C + PLAY * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 32, endpoint=False)]
     def path(angle):
         pts = []; bad = 0.0
@@ -470,8 +470,15 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
             x = C + PLAY * q * math.cos(angle); y = C + PLAY * q * math.sin(angle)
             pts.append((x, y, float(at(z, x, y)))); bad += 3.0 * bool(at(deep, x, y)) * (abs(q) > 0.3) + float(at(forest, x, y)) + 2.0 * (float(at(sl, x, y)) > 0.5) + 6.0 * bool(at(offlimits, x, y))
         return bad + 6.0 * (bool(at(deep, *pts[0][:2])) + bool(at(deep, *pts[-1][:2]))), pts
-    others = sorted((path(axis + math.pi * k / 8) + (k,) for k in range(1, 8)), key=lambda t: t[0])[:3]
-    paths = [path(axis)[1]] + [o[1] for o in sorted(others, key=lambda t: t[2])]
+    # In a campaign the game takes the path that best matches the direction the parties met from, and slides the two
+    # deployments along it by where the party stands in the map tile (BattleSpawnPathSelector): every path offered is a
+    # line the armies may really form up on. So only bearings that are clean are offered, and layouts with one way
+    # through (a valley, a pass, a shelf, a river or shore to fight across) offer only bearings close to their axis.
+    narrow = kind in ("valley", "pass", "ledge", "crossing", "bluff")
+    base = path(axis)
+    others = sorted((path(axis + math.pi * k / 8) + (k,) for k in ((1, 7) if narrow else range(1, 8))), key=lambda t: t[0])
+    others = [o for o in others if o[0] <= max(2.5, base[0] + 0.5)][:3]
+    paths = [base[1]] + [o[1] for o in sorted(others, key=lambda t: t[2])]
     walk = scenebuild.polygon_mask(border, F.shape, cell) & ~deep & ~blocked & ~offlimits
 
     def g(x, y): return float(at(z, x, y))

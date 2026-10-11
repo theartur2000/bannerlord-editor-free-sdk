@@ -3,6 +3,8 @@
 // What it does today (steps F0 and F1 of docs/BATTLEFIELDS.md):
 //   - wraps the campaign's SceneModel, the game model that turns a spot on the world map into a battle scene name;
 //   - when Modules/GenFields/genfield.txt names a scene, every field battle goes to that scene;
+//   - otherwise, when a pool of generated fields is installed (Pool.cs), every field battle on land goes to a pool field
+//     that fits the spot on the map; naval battles, sieges, villages and hideouts keep the game's own scenes;
 //   - when that scene's folder is not in Modules/GenFields/SceneObj yet, it is copied there from the SDK's stage folder
 //     right then, while the game runs. That is the test of "can the engine load a scene folder that did not exist at
 //     startup";
@@ -44,6 +46,7 @@ namespace GenFields
         {
             base.OnMissionBehaviorInitialize(mission);
             if (AutoTest.On) mission.AddMissionBehavior(new AutoMissionLogic());
+            try { if (Pool.Has(mission.SceneName)) mission.AddMissionBehavior(new FieldNoteLogic()); } catch (Exception e) { Log.Write("field note not added: " + e.Message); }
         }
 
         protected override void OnGameStart(Game game, IGameStarter gameStarter)
@@ -78,6 +81,11 @@ namespace GenFields
                 string where = "?";
                 try { var p = MobileParty.MainParty.Position.ToVec2(); where = p.x.ToString("F2") + ", " + p.y.ToString("F2"); } catch { }
                 string forced = isNavalEncounter ? null : Control.ForcedScene();
+                if (forced == null && !isNavalEncounter)
+                {
+                    string picked = Pool.Pick();        // a generated field that fits this spot of the map
+                    if (picked != null) { Log.Write("battle at map position " + where + ", native scene " + native + ", sent to pool field " + picked); return picked; }
+                }
                 Log.Write("battle at map position " + where + ", patch index " + mapPatch.sceneIndex + " at "
                           + mapPatch.normalizedCoordinates.x.ToString("F3") + ", " + mapPatch.normalizedCoordinates.y.ToString("F3")
                           + ", native scene " + native + (forced != null ? ", sent to " + forced : ""));

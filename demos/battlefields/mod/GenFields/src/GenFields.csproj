@@ -25,5 +25,7 @@
     <Reference Include="$(BannerlordDir)\Modules\Native\bin\Win64_Shipping_Client\TaleWorlds.MountAndBlade.View.dll"><Private>false</Private></Reference>
     <!-- the autotest opens a Custom Battle: CustomGameManager lives in the CustomBattle module -->
     <Reference Include="$(BannerlordDir)\Modules\CustomBattle\bin\Win64_Shipping_Client\TaleWorlds.MountAndBlade.CustomBattle.dll"><Private>false</Private></Reference>
+    <!-- the campaign autotest starts a sandbox campaign: SandBoxGameManager lives in the SandBox module -->
+    <Reference Include="$(BannerlordDir)\Modules\SandBox\bin\Win64_Shipping_Client\SandBox.dll"><Private>false</Private></Reference>
   </ItemGroup>
 </Project>
