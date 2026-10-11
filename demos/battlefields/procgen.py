@@ -25,9 +25,11 @@ N = 1537
 C = FIELD / 2
 PLAY = 330.0                  # radius of the walkable area
 SPAWN = 235.0                 # the armies start this far from the middle
+BUMPS = 2.2                   # most small relief (metres rms) left on gentle ground of the fighting area
 KINDS = ("ridge", "valley", "hill", "crossing", "clearing", "pass", "bluff", "broken", "mesa", "ledge")
 TEMPLATES = {"Plain": "battle_terrain_a", "Desert": "battle_terrain_b", "Steppe": "battle_terrain_c"}
 SKIP_ROCKS = ("far", "bridge", "heap", "top", "ambush", "wall")   # scenery for the distance, buildings, and pieces with special uses
+BUSHES = r"plant|bush|shrub|green__mix|fern"          # detail meshes that are bushes and plants, not grass blades or trees
 PROPS = r"^(forest_ruinous_|dry_tree_|tree_root_|log_pine|desert_bones|desert_cow_skull)"
 # What each rock is, from looking at every one alone on flat ground in the game (demos/battlefields/lineup.py):
 #   wall     wide layered outcrops: the faces of steep ground
@@ -92,16 +94,17 @@ def pick_kind(rules, rng):
 
 
 def _roles(tpl):
-    """Sorts the template's texture layers into jobs, whatever the template calls them."""
-    roles = {}
+    """Sorts the template's texture layers into jobs, whatever the template calls them. What a layer is for is read from
+    how the template itself uses it: a layer it paints on steep ground is rock, whatever its name."""
+    roles = {}; stats = tpl.paint_stats()
     def add(role, i): roles.setdefault(role, []).append(i)
     for i, name in enumerate(tpl.layer_names):
         if i == 0: continue
-        nm = name.lower(); phys = (tpl.physics[i] or "").lower()
+        nm = (name + " " + (tpl.diffuse[i] or "")).lower(); phys = (tpl.physics[i] or "").lower()
         if i in tpl.flora_layers: add("grasscover" if "grass" in nm else "flora", i)
         elif not tpl.enabled["summer"][i] and tpl.enabled["winter"][i]: add("snow", i)
-        elif phys == "stone" or "rock" in nm or "cliff" in nm: add("rock", i)
-        elif phys in ("soil", "sand", "mud") or any(k in nm for k in ("soil", "flow", "dirt", "mud", "earth")): add("soil", i)
+        elif stats[i]["slope"] >= 0.3 or (stats[i]["strong"] < 0.002 and (phys == "stone" or "rock" in nm or "cliff" in nm)): add("rock", i)
+        elif "grass" not in nm and (phys in ("soil", "sand", "mud") or any(k in nm for k in ("soil", "dirt", "mud", "earth", "sand"))): add("soil", i)
         else: add("grass", i)
     return roles
 
@@ -249,6 +252,15 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
     for sgn in (-1, 1):
         x, y = pt(sgn * SPAWN, 0); w = 0.75 * (1 - smoothstep(F.dist(x, y), 35, 90)); z = z * (1 - w) + zb * w
 
+    # Small mounds on the ground the armies ride over. Measured as the height left after a 40 m blur, on ground gentler
+    # than 0.2: the shipped battlefields have 1.5 to 2.5 m (rms), the first generated valleys had 4 to 5 m and rode badly.
+    # Whatever is above BUMPS is scaled down, on gentle ground only: the hills, walls and cliffs keep their shape.
+    sl0 = terraform.slope(terraform.blur_fast(z, 6.0 / cell), cell)
+    gentle = (1 - smoothstep(sl0, 0.18, 0.38)) * (1 - smoothstep(rr, PLAY + 20, PLAY + 120))
+    bump = z - terraform.blur_fast(z, 40.0 / cell)
+    sel = (gentle > 0.9) & (rr < PLAY)
+    rms = float(np.sqrt((bump[sel] ** 2).mean())) if sel.any() else 0.0
+    if rms > BUMPS: z = z - (1 - BUMPS / rms) * bump * gentle
     offlimits = np.zeros(F.shape, bool)
     if ledge is not None:
         over = V - (ledge["edge"] + 14 * F.wobble(130.0) + 5 * F.wobble(38.0))          # metres past the edge
@@ -334,7 +346,7 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
     if not usage: spots = []          # a palette without rocks
     entities = []; blocked = np.zeros(F.shape, bool); rocks = []
     wet = terraform.blur_fast(under.astype(np.float64), 6.0 / cell) > 0.02 if level is not None else None
-    banked = 0.0
+    banked = 0.0; rocktop = np.full(z.shape, -1e9); z_before = z.copy()
     for x, y, why in spots:
         if why == "cliff": name = pick(towers if rng.random() < 0.12 else walls)
         elif why == "scree": name = pick(boulders)
@@ -359,14 +371,20 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
             yaws = [uni(-3.14, 3.14) for _ in range(6)]; leans = (uni(-tilt, tilt) / 2, 0.0); rolls = (uni(-tilt, tilt) / 2, 0.0)
         tall = h0 * sc
         f = rockfit.fit(z, cell, name, x, y, yaws, leans, [sink + q * tall for q in (0.06, 0.0, -0.06, -0.12, -0.2, -0.32, -0.45)], sc, rolls,
-                        show=0.2 if why == "scree" else 0.3, max_fill=5.0)
+                        show=0.2 if why == "scree" else 0.3, max_fill=3.0)
         if f is None: continue                 # the ground here is the wrong shape for this rock
-        banked += rockfit.cover(z, cell, f["rim"], keep=wet)
+        # the highest rock surface over every cell, of all rocks so far: earth is never banked more than a hand above it,
+        # whichever rock the bank belongs to (an agent on a rock would walk on under the ground)
+        tj, ti, t_ = rockfit.top_surface(z.shape, cell, f["body"], f["tris"])
+        np.maximum(rocktop[tj:tj + t_.shape[0], ti:ti + t_.shape[1]], t_, out=rocktop[tj:tj + t_.shape[0], ti:ti + t_.shape[1]])
+        banked += rockfit.cover(z, cell, f["rim"], keep=wet, top=rocktop)
         rockfit.footprint(z, cell, f["body"], mask=blocked)
         if palette and palette.get("support") and u.get("support", True): rockfit.support(z, cell, name, f["pos"], f["rot"], sc, keep=wet)
         entities.append({"mesh" if palette else "prefab": name, "position": f["pos"], "rotation": f["rot"], "scale": (sc, sc, sc)})
         rocks.append((x, y, sc, why))
 
+    # a rock placed later may lie under a bank made earlier: the same rule once more over all of them
+    z = np.where(rocktop > -1e8, np.minimum(z, np.maximum(z_before, rocktop + 0.35)), z)
     # ground textures by job
     sl = terraform.slope(terraform.blur_fast(z, 1.5), cell)
     curve = z - terraform.blur_fast(z, 10)
@@ -375,22 +393,35 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
     def m8(a): return np.clip(np.rint(np.clip(a, 0, 1) * 255), 0, 255).astype(np.uint8)
     flat = 1 - smoothstep(sl, 0.25, 0.5)
     dry = 1 - smoothstep(wetground, 0.05, 0.3)
-    cov = tpl.coverage()
-    def patches(share):
-        """A mask of natural patches covering `share` of the map, nearly on or off (detail meshes need more than half strength)."""
-        n = terraform.noise(F.shape, cell, 140.0, rng) + 0.6 * terraform.noise(F.shape, cell, 55.0, rng) + 0.3 * terraform.noise(F.shape, cell, 22.0, rng)
-        thr = float(np.quantile(n[::4, ::4], 1 - share)); return smoothstep(n, thr - 0.04, thr + 0.04)
-    for k, i in enumerate(roles.get("grass", [])):
-        if tpl.meshes[i]:      # the layer that carries the grass and plant models: as widespread as the template paints it (61 % on the plains)
-            masks[i] = m8(patches(float(np.clip(cov[i] * 1.15, 0.55, 0.85))) * flat * dry)
-        else:
-            masks[i] = m8(smoothstep(terraform.noise(F.shape, cell, (90.0, 45.0, 160.0, 60.0)[k % 4], rng), 0.05, 0.5) * flat)
+    # Each ground layer gets the same distribution of strengths the template paints it with (Template.paint_stats): as
+    # much solid cover, as much faint wash, as much nothing. Layers painted by my own taste gave large half-strength
+    # blends of two or three textures, and the template's base texture, which its own map hardly ever shows, lay bare
+    # over a quarter of the field. Where a layer goes is decided by a field of scores; how strong, by the template.
+    stats = tpl.paint_stats()
+    inner = rr < 370.0
+    def like_template(i, score):
+        out = np.zeros(score.shape, np.uint8)
+        for zone, q in ((inner, stats[i]["q_in"]), (~inner, stats[i]["q_out"])):       # the fighting ground and the outskirts, each like the template's
+            v = score[zone]; order = np.argsort(v, kind="stable"); rank = np.empty(v.size, np.float64); rank[order] = np.linspace(0.0, 1024.0, v.size)
+            out[zone] = np.rint(q[np.rint(rank).astype(np.int64)]).astype(np.uint8)
+        return out
+    def patchy(base, mid=55.0, fine=22.0, coarse=0.0):
+        """A field of scores whose patches are about base / 2.5 metres across; coarse adds a slow drift over hundreds of metres."""
+        a = terraform.noise(F.shape, cell, base, rng) + 0.6 * terraform.noise(F.shape, cell, mid, rng) + 0.3 * terraform.noise(F.shape, cell, fine, rng)
+        return a + (coarse * terraform.noise(F.shape, cell, 260.0, rng) if coarse else 0.0)
+    wet01 = smoothstep(wetground, 0.05, 0.3)
     # where water gathers on sloping ground: bare earth and gravel in the gullies (not on the flats, where a drainage line means nothing)
     runoff = smoothstep(terraform.blur_fast(np.log10(np.maximum(drain, 1.0)), 2.5 / cell), 3.6, 4.5) * smoothstep(sl, 0.07, 0.16) * (1 - smoothstep(sl, 0.5, 0.8))
+    hollow = smoothstep(-curve, 0.25, 0.9) * smoothstep(sl, 0.08, 0.25)
+    for k, i in enumerate(roles.get("grass", [])):
+        # the layer with the grass and plant models keeps off steep and wet ground; the other grass textures only off steep ground
+        # shipped maps paint the layer with models in dabs of about 8 m, so tufts and bare spots alternate everywhere;
+        # the other grass textures in patches of about 23 m
+        score = (patchy(11.0, 5.5, 3.0, coarse=0.2) if tpl.meshes[i] else patchy((60.0, 45.0, 80.0, 50.0)[k % 4], 24.0, 10.0, coarse=0.3)) \
+            - 4.0 * (1 - flat) - (4.0 * wet01 if tpl.meshes[i] else 0.0)
+        masks[i] = like_template(i, score)
     for k, i in enumerate(roles.get("soil", [])):
-        a = np.maximum(smoothstep(-curve, 0.25, 0.9) * smoothstep(sl, 0.08, 0.25), 0.8 * runoff) if k == 0 else np.maximum(smoothstep(-curve, 0.6, 1.6), smoothstep(wetground, 0.15, 0.6))
-        if k == 0 and len(roles.get("soil", [])) == 1: a = np.maximum(a, smoothstep(wetground, 0.15, 0.6))
-        masks[i] = m8(a)
+        masks[i] = like_template(i, 1.5 * hollow + 1.5 * runoff + 2.0 * smoothstep(wetground, 0.15, 0.6) + 0.7 * patchy((110.0, 60.0)[k % 2], 40.0, 15.0) - 2.0 * (1 - flat))
     for k, i in enumerate(roles.get("rock", [])):
         masks[i] = m8(smoothstep(sl, 0.38, 0.58) if k == 0 else smoothstep(sl, 0.7 + 0.08 * (k - 1), 1.0 + 0.08 * (k - 1)))
     for k, i in enumerate(roles.get("snow", [])):
@@ -415,7 +446,7 @@ def design(rules, kind=None, seed=None, log=print, palette=None):
     for sgn in (-1, 1): forest = forest * smoothstep(F.dist(*pt(sgn * SPAWN, 0)), 55, 95)
     forest = smoothstep(terraform.blur_fast(forest, 2.0 / cell), 0.42, 0.52) * (terraform.blur_fast(blocked.astype(np.float64), 1.5 / cell) < 0.05)
     for k, i in enumerate(roles.get("flora", [])): masks[i] = m8(forest)
-    for i in roles.get("grasscover", []): masks[i] = m8(patches(float(np.clip(cov[i] * 1.15, 0.4, 0.8))) * flat * dry)
+    for i in roles.get("grasscover", []): masks[i] = like_template(i, patchy(22.0, 10.0, 5.0, coarse=0.25) - 4.0 * (1 - flat) - 4.0 * wet01)
 
     # the small things the shipped battlefields of the biome leave lying about: dead and fallen trees, roots, logs, bones
     props = [(k_, n_) for k_, n_, _ in cat.prefabs(rules.biome if rules.biome in TEMPLATES else "Plain", PROPS)][:14]
@@ -510,6 +541,9 @@ def write(d, name, out_dir, log=print):
     """The scene folder of a design."""
     # rock textures projected from six sides: on steep ground a texture laid on from above stretches into stripes
     edits = {i: {"six_side": True} for i in d["roles"].get("rock", [])}
+    # three times the bushes and plants among the grass (the shipped density reads sparse on ground this open)
+    for i, names in enumerate(d["template"].meshes):
+        if names and i not in d["template"].flora_layers or (i in d["roles"].get("grasscover", [])): edits[i] = dict(edits.get(i, {}), mesh_density=(BUSHES, 3.0))
     pal = d.get("palette")
     if pal:        # every layer painted with the palette's textures, none of the template's detail meshes
         tpl = d["template"]; role_of = {i: role for role, ids in d["roles"].items() for i in ids}

@@ -48,7 +48,37 @@ class Template:
         for l in self.layers:
             m = l.find("summer").find("meshes") if l.find("summer") is not None else None
             self.meshes.append([x.get("name") for x in m.elements("mesh")] if m is not None else [])
-        self._coverage = None
+        self._coverage = None; self._paint = None
+        self.diffuse = []
+        for l in self.layers:
+            t = l.find("summer").find("textures") if l.find("summer") is not None else None
+            self.diffuse.append(next((x.get("name") for x in t.elements("texture") if x.get("type") == "diffusemap"), "") if t is not None else "")
+
+    def paint_stats(self, inner=370.0):
+        """How the template itself is painted, per layer: {"q_in", "q_out": the weight (0..255) at 1025 evenly spaced
+        quantiles, inside and outside `inner` metres of the map's centre (a shipped battlefield paints the ground the armies
+        fight on differently from its outskirts: grass with models on 61 % of the middle of the plains template, 29 % of the
+        whole), "strong": the share of the inside painted at more than half strength, "slope": the median ground slope
+        where the layer is strong}.
+        A generator that gives its own layers the same weight distributions gets the template's mix of textures: how much
+        of each, and how much of it as a faint wash and how much as solid cover."""
+        if self._paint is None:
+            t = terrain.Terrain(os.path.join(self.folder, "terrain.bin")); W = t.weight_nodes()
+            z = t.heightmap(terrain.scene_terrain_info(os.path.join(self.folder, "scene.xscene")))
+            sl = terraform.slope(terraform.blur_fast(z, 1.5), self.cell)
+            n = z.shape[0]; yy, xx = np.mgrid[0:n, 0:z.shape[1]] * self.cell
+            mid = np.hypot(xx - self.size[0] / 2, yy - self.size[1] / 2) < inner
+            out = []; qs = np.linspace(0, 1, 1025)
+            for i in range(len(self.layers)):
+                nodes = [node[i] if i < len(node) else None for node in W]
+                if all(a is None for a in nodes): full = np.zeros(z.shape, np.uint8)
+                else: full = terrain.join_nodes([a if a is not None else np.zeros((terrain.NODE, terrain.NODE), np.uint8) for a in nodes], self.nx, self.ny)
+                if full.shape != z.shape: full = np.zeros(z.shape, np.uint8)        # a template with smaller nodes: not measured
+                strong = full > 127
+                out.append({"q_in": np.quantile(full[mid], qs), "q_out": np.quantile(full[~mid], qs), "strong": float(strong[mid].mean()),
+                            "slope": float(np.median(sl[strong])) if strong.any() else 0.0})
+            self._paint = out
+        return self._paint
 
     def coverage(self):
         """Per layer, the share of the template's own map that is painted with it at more than half strength."""
@@ -116,14 +146,16 @@ def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
     return navmesh.NavMesh.from_polygons(np.asarray(verts, np.float32).reshape(-1, 3), polys), keep
 
 
-def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None):
+def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None, mesh_density=None):
     """Changes one terrain texture layer (a <layer> element) in every season it defines.
     six_side   True: the texture is projected from six sides instead of from above, so it does not stretch into stripes
                on steep ground (the shipped scenes set it on their rock layers)
     textures   {"diffusemap" | "normalmap" | "specularmap" | "displacementmap" | "areamap" | "splattingmap": texture name}
     meshes     the detail meshes the engine scatters where the layer is painted at more than half strength: a list of
                dicts of <mesh> attributes (name, density, size_min, size_max, ...); replaces the layer's list
-    attrs      attributes of the season element itself (scale, physics_material, parallax_amount, ...)"""
+    attrs      attributes of the season element itself (scale, physics_material, parallax_amount, ...)
+    mesh_density  (regular expression, factor): the density of every detail mesh whose name matches is multiplied"""
+    import re
     for season in SEASONS:
         se = layer.find(season)
         if se is None: continue
@@ -134,6 +166,9 @@ def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None):
         if textures and se.find("textures") is not None:
             for x in se.find("textures").elements("texture"):
                 if x.get("type") in textures: x.set("name", textures[x.get("type")])
+        if mesh_density is not None and se.find("meshes") is not None:
+            for x in se.find("meshes").elements("mesh"):
+                if re.search(mesh_density[0], x.get("name") or "", re.I): x.set("density", "%.3f" % (float(x.get("density") or 0) * mesh_density[1]))
         if meshes is not None:
             me = se.find("meshes")
             if me is None: me = se.append(scene.Element("meshes"))

@@ -99,8 +99,8 @@ namespace GenFields
                 float w;
                 switch (f.Kind)
                 {
-                    case "crossing": w = river > 0.04f ? 6f : 0.25f; break;
-                    case "bluff": w = sea > 0.08f ? 6f : 0.1f; break;
+                    case "crossing": w = river > 0.03f ? 6f : 0f; break;        // no river on the map here, no river on the field
+                    case "bluff": w = sea > 0.08f ? 6f : 0f; break;
                     case "pass": case "ledge": w = 0.5f + 8f * rough; break;
                     case "valley": case "ridge": case "mesa": w = 1.2f + 3f * rough; break;
                     case "clearing": w = 0.4f + 6f * wood; break;
@@ -108,8 +108,10 @@ namespace GenFields
                 }
                 weights.Add(w);
             }
+            if (weights.Sum() <= 0f) for (int q = 0; q < weights.Count; q++) weights[q] = 1f;
             double r = Rng.NextDouble() * weights.Sum(); int k = 0;
-            for (; k < fresh.Count - 1; k++) { r -= weights[k]; if (r <= 0) break; }
+            for (; k < fresh.Count - 1; k++) { r -= weights[k]; if (r <= 0 && weights[k] > 0f) break; }
+            while (k > 0 && weights[k] <= 0f) k--;
             Field pick = fresh[k];
             Recent.Add(pick.Name); if (Recent.Count > 5) Recent.RemoveAt(0);
             Log.Write("pool: terrain here " + here + ", around " + string.Join(" ", around.GroupBy(t => t).OrderByDescending(g => g.Count()).Select(g => g.Key + "x" + g.Count()))
@@ -122,7 +124,7 @@ namespace GenFields
     // in a battle on a pool scene: says which field this is, and marks spots on F10
     public class FieldNoteLogic : MissionLogic
     {
-        bool _said; float _t; int _marks;
+        bool _said; float _t, _nextCheck; int _marks, _lifted;
 
         public override void OnMissionTick(float dt)
         {
@@ -134,6 +136,24 @@ namespace GenFields
                     _said = true;
                     InformationManager.DisplayMessage(new InformationMessage("Battlefield: " + Pool.Describe(Mission.SceneName) + "   F10 marks a spot"));
                     Log.Write("battle on pool scene " + Mission.SceneName);
+                }
+                // Nobody stays under the ground. A generated field has no caves or bridges, so an agent more than 1.5 m below
+                // the terrain has got under it (a rock's solid body can lead there) and is put back on the surface.
+                if (_t > _nextCheck)
+                {
+                    _nextCheck = _t + 0.5f;
+                    foreach (Agent a in Mission.Agents)
+                    {
+                        if (!a.IsActive() || a.RiderAgent != null && !a.IsMount) continue;
+                        if (a.IsHuman && a.MountAgent != null) continue;          // a rider moves with the mount
+                        Vec3 p = a.Position; float g = Mission.Scene.GetTerrainHeight(p.AsVec2);
+                        if (p.z < g - 1.5f)
+                        {
+                            a.TeleportToPosition(new Vec3(p.x, p.y, g + 0.1f));
+                            if (_lifted++ < 20) Log.Write("lifted " + (a.IsMount ? "a mount" : a.Name) + " from " + (g - p.z).ToString("F1", CultureInfo.InvariantCulture) + " m under the ground at "
+                                                          + p.x.ToString("F1", CultureInfo.InvariantCulture) + " " + p.y.ToString("F1", CultureInfo.InvariantCulture) + " on " + Mission.SceneName);
+                        }
+                    }
                 }
                 if (Input.IsKeyPressed(InputKey.F10) && Mission.MainAgent != null)
                 {

@@ -46,16 +46,11 @@ def register(name, positions, triangles, step=1.0):
     return _shapes[name]
 
 
-def support(z, cell, name, pos, rot, scale=1.0, under=0.35, keep=None, inset=2):
-    """Raises the ground (z, in place) under a placed model to just below its upper surface, so the terrain itself is
-    what agents collide with and stand on: the way to give a custom model a body without a collision shape. Works for
-    anything without overhangs to walk under (rocks, mounds, wrecks); the model hides the raised ground.
-    inset: the raised ground stays this many cells inside the model's outline and never stands higher than the lowest
-    surface near it, so no steps of terrain show under a lip or beside a wall.
-    Needs the model's triangles (register). Returns the cells changed."""
-    s = _shapes[name]; W = place(s["body"], pos, rot, scale); T = s["tris"]
+def top_surface(shape, cell, W, T):
+    """The height of a placed model's upper surface over the terrain grid: (j0, i0, top) where top[j - j0, i - i0] is the
+    highest point of the model above cell (j, i), -1e9 where the model is not above the cell. W: world vertices, T: triangles."""
     lo = W.min(0); hi = W.max(0)
-    j0 = max(0, int(lo[1] / cell)); j1 = min(z.shape[0], int(hi[1] / cell) + 2); i0 = max(0, int(lo[0] / cell)); i1 = min(z.shape[1], int(hi[0] / cell) + 2)
+    j0 = max(0, int(lo[1] / cell)); j1 = min(shape[0], int(hi[1] / cell) + 2); i0 = max(0, int(lo[0] / cell)); i1 = min(shape[1], int(hi[0] / cell) + 2)
     top = np.full((j1 - j0, i1 - i0), -1e9)
     a, b, c = W[T[:, 0]], W[T[:, 1]], W[T[:, 2]]
     for k in range(len(T)):                                   # rasterise each triangle's height over the cells it covers
@@ -70,6 +65,19 @@ def support(z, cell, name, pos, rot, scale=1.0, under=0.35, keep=None, inset=2):
         w2 = 1 - w0 - w1; inside = (w0 >= -1e-6) & (w1 >= -1e-6) & (w2 >= -1e-6)
         zz = np.where(inside, w0 * a[k, 2] + w1 * b[k, 2] + w2 * c[k, 2], -1e9)
         sub = top[ja - j0:jb + 1 - j0, ia - i0:ib + 1 - i0]; np.maximum(sub, zz, out=sub)
+    return j0, i0, top
+
+
+def support(z, cell, name, pos, rot, scale=1.0, under=0.35, keep=None, inset=2):
+    """Raises the ground (z, in place) under a placed model to just below its upper surface, so the terrain itself is
+    what agents collide with and stand on: the way to give a custom model a body without a collision shape. Works for
+    anything without overhangs to walk under (rocks, mounds, wrecks); the model hides the raised ground.
+    inset: the raised ground stays this many cells inside the model's outline and never stands higher than the lowest
+    surface near it, so no steps of terrain show under a lip or beside a wall.
+    Needs the model's triangles (register). Returns the cells changed."""
+    s = _shapes[name]; W = place(s["body"], pos, rot, scale); T = s["tris"]
+    j0, i0, top = top_surface(z.shape, cell, W, T)
+    j1, i1 = j0 + top.shape[0], i0 + top.shape[1]
     if inset > 0:                                              # a minimum filter: each cell takes the lowest value around it
         pad = np.pad(top, inset, mode="constant", constant_values=-1e9); low = top.copy(); h, w = top.shape
         for dj in range(-inset, inset + 1):
@@ -83,18 +91,19 @@ def support(z, cell, name, pos, rot, scale=1.0, under=0.35, keep=None, inset=2):
 
 
 def rock_shape(name, step=1.0):
-    """{"rim": points every `step` metres along the open edges (m, 3), "body": the mesh's vertices (n, 3)} of a prefab
-    whose metamesh has the same name (true of the shipped rocks). Kept in memory and under <SDK home>/cache."""
+    """{"rim": points every `step` metres along the open edges (m, 3), "body": the mesh's vertices (n, 3), "tris": its
+    triangles as vertex indices (k, 3)} of a prefab whose metamesh has the same name (true of the shipped rocks). Kept in
+    memory and under <SDK home>/cache."""
     if name in _shapes: return _shapes[name]
-    f = os.path.join(CACHE, name + ".npz")
+    f = os.path.join(CACHE, name + ".v2.npz")
     if os.path.isfile(f):
-        with np.load(f) as d: s = {"rim": d["rim"], "body": d["body"]}
+        with np.load(f) as d: s = {"rim": d["rim"], "body": d["body"], "tris": d["tris"]}
     else:
         P, F = meshread.shape(name); pts = []
         for a, b in meshread.open_edges(P, F):
             n = max(1, int(np.linalg.norm(P[b] - P[a]) / step))
             for t in (np.arange(n) + 0.5) / n: pts.append(P[a] * (1 - t) + P[b] * t)
-        s = {"rim": np.array(pts, np.float64).reshape(-1, 3), "body": P}
+        s = {"rim": np.array(pts, np.float64).reshape(-1, 3), "body": P, "tris": F}
         os.makedirs(CACHE, exist_ok=True); np.savez_compressed(f, **s)
     _shapes[name] = s
     return s
@@ -136,13 +145,18 @@ def fit(z, cell, name, x, y, yaws, leans=(0.0,), sinks=(0.0,), scale=1.0, rolls=
                     if best is None or cost < best["cost"]:
                         best = {"cost": cost, "pos": (x, y, g0 + sink), "rot": (lean, roll, yaw), "scale": scale, "fill": fill, "high": high, "shown": shown}
     if best is None or best["high"] > max_fill: return None
-    best["rim"] = place(s["rim"], best["pos"], best["rot"], scale); best["body"] = place(s["body"], best["pos"], best["rot"], scale)
+    best["rim"] = place(s["rim"], best["pos"], best["rot"], scale); best["body"] = place(s["body"], best["pos"], best["rot"], scale); best["tris"] = s["tris"]
     return best
 
 
-def cover(z, cell, rim, margin=0.35, talus=0.75, keep=None):
+def cover(z, cell, rim, margin=0.35, talus=0.75, keep=None, body=None, tris=None, top=None):
     """Banks earth over a rim: raises z (in place) so every rim point is `margin` under the ground, the new earth falling
-    away at slope `talus` from each point. keep: a mask of cells that must not change (water). Returns the volume added."""
+    away at slope `talus` from each point. keep: a mask of cells that must not change (water). Returns the volume added.
+
+    body, tris (world vertices and triangles of the rock): where the rock itself is under a cell, the earth is not raised
+    more than `margin` above the rock's upper surface. Without that the bank over a high rim buries the lower rock next
+    to it under metres of earth, and the rock is solid under there: an agent walking on the rock walks on under the
+    ground (seen in play: a rider 5 m below the surface, looking out through the terrain)."""
     if not len(rim): return 0.0
     h = rim[:, 2] + margin - ground(z, cell, rim[:, 0], rim[:, 1]); pts = rim[h > 0]
     if not len(pts): return 0.0
@@ -155,6 +169,12 @@ def cover(z, cell, rim, margin=0.35, talus=0.75, keep=None):
         d = np.sqrt((X[None] - p[:, 0, None, None]) ** 2 + (Y[None] - p[:, 1, None, None]) ** 2)
         need = np.maximum(need, (p[:, 2, None, None] + margin - talus * np.maximum(d - cell, 0.0)).max(0))
     old = z[j0:j1, i0:i1]; new = np.maximum(old, need)
+    if top is None and body is not None and tris is not None: top = top_surface(z.shape, cell, body, tris)
+    if top is not None:          # (j0, i0, array) as top_surface gives it, or a whole map of the highest rock surface per cell
+        if isinstance(top, tuple):
+            tj, ti, t = top; full = np.full(z.shape, -1e9); full[tj:tj + t.shape[0], ti:ti + t.shape[1]] = t; top = full
+        t = top[j0:j1, i0:i1]
+        new = np.where(t > -1e8, np.minimum(new, np.maximum(old, t + margin)), new)
     if keep is not None: new = np.where(keep[j0:j1, i0:i1], old, new)
     added = float((new - old).sum() * cell * cell); z[j0:j1, i0:i1] = new
     return added
