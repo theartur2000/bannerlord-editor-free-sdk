@@ -116,6 +116,23 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 
 Start with B1 to B2: they are small and already make procedural level work possible on existing terrain.
 
+**Where stream B stands (2026-10-10).** All of it without the engine bridge and without the editor:
+
+| Step | State |
+|---|---|
+| B1 | done: `sdk/scene.py`; 567 shipped `scene.xscene` and 561 `atmosphere.xml` files round-trip byte for byte |
+| B2 | done: entities, tags, scripts, spawn paths, borders; custom models placed by mesh name |
+| B3 | done: `sdk/terrain.py`; chunk tables of all 428 shipped terrains read, full rebuilds byte-identical on the sample checked |
+| B4 | done from arrays: `sdk/scenebuild.py` writes heights, normals, layer weights, physics maps; texture layers changed with `edit_layer`. In game: generated terrains are ridden and fought on. A Blender heightmap import is a few lines on top and not written |
+| B5 | done by decoding: `sdk/navmesh.py` reads and writes versions 7 to 9 (485 shipped files); a grid navmesh over walkable ground is enough for 200 against 200 |
+| B6 | partly: trees, grass and bushes through the template's flora and detail layers, water by level, no light bake needed for battlefields. `flora.bin` itself is not decoded (battlefields ship it empty) |
+| B7 | battle only |
+| B8 | read only: `sdk/worldmap.py` gives heights, biome types and settlements of the campaign map |
+
+Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py` (rocks fitted to the ground),
+`sdk/assetpack.py` and `sdk/psk.py` (custom textures, materials and models in scenes), and the battlefield generator
+in `demos/`. See BATTLEFIELDS.md, sections 5a to 5c.
+
 ### C. The loop (M, in parallel with everything)
 | Item | Done when |
 |---|---|

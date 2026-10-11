@@ -173,9 +173,63 @@ What the rocks are (`demos/battlefields/lineup.py` puts every rock prefab alone 
   shards hanging in the air. The generator copies the measured turn and lean and skips spots with no higher ground behind.
 
 In game (unmodified game plus GenFields): ridge, river crossing, pass and mesa fields loaded and were fought on, 200 against
-200; rocks, trees, tall grass and the river's water render. Open: the test can only show ground-level views (a camera
-away from the player has most of the terrain culled), spawn sides are not yet checked for fairness, generation takes
-16 to 21 s in Python.
+200; rocks, trees, tall grass and the river's water render. What followed is in 5c.
+
+## 5c. Fitted rocks, ground cover, a cliff shelf, custom assets (2026-10-10)
+
+**Rocks fitted from their real meshes.** `sdk/meshread.py` reads any shipped mesh from the game's packages. Almost every
+rock is an open shell: `rock_cliff_a` is 37 m wide, 33 m deep and 30 m tall with 297 m of open rim; of the rocks the
+plains use only the small ones (`cave_rock_*`, `terrain_green_rock_a/b/c`, `rock_new_green_*`) are closed. Where a rim is
+above the ground the player sees through the rock.
+- The shipped scenes do not bury the rims either: over 143 placements of `rock_cliff_b`, a third of the rim (median)
+  stands more than 0.3 m in the air, its 95th percentile 4 m up. They hide it behind other rocks and hand-made terrain.
+- The same measurement fixes how a scene turns an entity: of the six orders of `rotation_euler`, R = Rz . Rx . Ry
+  buries the shipped rims deepest.
+- `sdk/rockfit.py` therefore makes the ground meet the rock. For each spot it tries the measured turn, lean and sink
+  and a few around them, takes the pose that needs the least earth, refuses poses whose underside is not in the
+  ground (a floating boulder), banks earth over what rim is left (slope 0.75) and marks the cells the rock stands on
+  for the navmesh. Rocks come before the painting, since they change the ground.
+- Budget per job: up to 130 cliff pieces, the outcrops in the open, up to 70 fallen blocks, nearest the fighting first.
+
+**Ground cover.** The grass, plants and small stones of a shipped scene are not entities: each texture layer lists
+detail meshes, and the engine scatters them where the layer is painted at more than half strength. The plains template
+paints its grass layer on 61 % of the map, the steppe one on 38 %, the desert's bushes on 9 %. The generator painted
+far less, so most ground was bare. It now paints each such layer as widely as its template does, in patches that are
+nearly on or off, never on steep or wet ground. Dead trees, logs, roots and bones are scattered as the shipped scenes
+of the biome use them.
+
+**Cliffs without stripes.** A terrain texture is laid on from above and stretches into stripes on steep ground. 28 of
+the shipped battlefields set `use_six_side_uv_mapping` on their rock layers; the generator now does (`scenebuild.edit_layer`).
+
+**A shelf with a drop.** Layout "ledge": a mountain wall on one side, 60 to 80 m away; on the other a sheer drop of 40 to
+70 m, 95 to 125 m away, cut after the erosion so it stays vertical. The face and the ground below are kept off the
+navmesh. Falling is the game's own: in the first run, with the edge nearer, one army lost 43 of 200 men over it before
+contact. Winter is a parameter of the battle, not of the scene: the same scene shows its snow layers and snowy trees.
+
+**The load crash at client +0x53f8ee.** Seen now and then since the first generated scenes. The dump shows the engine's
+image resize writing to a null buffer of 65535 x 65535: a weight map of width 0 less one. The game reads 16 layer slots
+per terrain node whatever the scene's layer count; the writer wrote one per layer (6 in the desert), so the game read
+on past the node into whatever followed. `terrain.build` now always writes 16, `terrain.check` reports nodes that do not.
+
+**Custom assets in a scene** (`sdk/assetpack.py`, `sdk/psk.py`, `demos/bl2field`). Found on the way, each by a black
+screen:
+- The game loads a module's `Assets` folder (with `RuntimeDataCache`) only when the module also has an `AssetSources`
+  folder. Without it nothing of the module loads and nothing is logged.
+- The terrain shader compiled for a scene is kept under `ProgramData\Mount and Blade II Bannerlord\Shaders\TerrainShaders\<module>\<scene>`.
+  A scene whose layers changed keeps the old shader until that folder is deleted. For the pool of scene folders this
+  means one pool per template: a slot must not change its layer set.
+- A layer without an area map must name it `none`. An empty name paints the whole terrain black.
+- A PSK mesh mirrored into the game's space (y negated) keeps its triangle order. Turned as well, the model is lit from
+  the inside and shows black. Check: the signed volume of a closed mesh is positive, as for the game's own.
+- A custom model has no collision shape (those are made in the editor). `rockfit.support` raises the ground under it to
+  just below its upper surface, inset by two cells, so the terrain is what agents collide with.
+
+**Runs** (unmodified game plus GenFields, 200 against 200, 40 s of fighting each, no crash in 21 runs after the slot
+fix): plains valley, mountain shelf and mountain pass in winter, desert hill and mesas, steppe valley and broken
+ground, river crossing, forest clearing, coastal bluff; and one field built only from custom models and textures.
+
+**Open.** Generation takes 20 to 40 s in Python, about half of it erosion and rock fitting; the target is 10 s in the
+loading screen, which means the C# port. Spawn sides are not checked for fairness. The test shows ground-level views only.
 
 ## 6. Steps
 

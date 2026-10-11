@@ -292,8 +292,8 @@ def erode_fluvial(z, cell, strength=1.0, iterations=6, grid=257, m=0.45, diffusi
     """Erosion by running water (the stream power law): water is routed downhill, each spot is cut in proportion to the
     water gathered above it and to its slope, so gullies grow into branching valleys with ridges between them. Solved on a
     coarse grid with the implicit scheme of Braun and Willett; the change is laid back over the full-size heights.
-    The routing surface is jittered a little each round (rng), which stops channels on flat ground from running in straight
-    lines along the grid. Returns (eroded heights, drainage area in square metres at full size)."""
+    The routing surface is jittered a little each round and the way down is picked at random among the downhill
+    neighbours (rng), which stops channels from running in straight lines along the grid. Returns (eroded heights, drainage area in square metres at full size)."""
     rng = rng or np.random.default_rng(0)
     n = z.shape[0]; step = max(1, (n - 1) // (grid - 1))
     zc = blur_fast(z, step / 2.0)[::step, ::step].copy(); c = cell * step
@@ -311,8 +311,11 @@ def erode_fluvial(z, cell, strength=1.0, iterations=6, grid=257, m=0.45, diffusi
             nb = pad[1 + dj:1 + dj + h, 1 + di:1 + di + w]; L = c * (1.41421356 if dj and di else 1.0)
             sl = (zf - nb) / L
             jj = np.clip(np.arange(h)[:, None] + dj, 0, h - 1); ii = np.clip(np.arange(w)[None, :] + di, 0, w - 1)
-            better = sl > best
-            best = np.where(better, sl, best); rec = np.where(better, jj * w + ii, rec); dist = np.where(better, L, dist)
+            # not strictly the steepest neighbour: one of the downhill ones, steeper ones more likely. With only eight
+            # directions the steepest-descent rule draws long straight channels along the grid on any even slope.
+            score = sl * rng.uniform(0.5, 1.5, sl.shape)
+            better = (sl > 0) & (score > best)
+            best = np.where(better, score, best); rec = np.where(better, jj * w + ii, rec); dist = np.where(better, L, dist)
         recl = rec.ravel().tolist(); distl = dist.ravel().tolist()
         a = [c * c] * (h * w)
         for i in reversed(order):                      # highest first: pass the gathered water on

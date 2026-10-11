@@ -10,6 +10,8 @@
   --campaign NAME  write genfield.txt so every campaign field battle goes to NAME. The scene is NOT copied: the module
                    copies it from the stage folder at the first battle, which tests loading a scene folder that did not
                    exist when the game started
+  --assets STAGE   copy a stage of custom assets (sdk/assetpack.py: textures, materials, models) into the module, for
+                   scenes built from them (demos/bl2field)
   --remove         delete Modules/GenFields
 
 Refuses while the game runs. Touches nothing outside Modules/GenFields.
@@ -27,7 +29,7 @@ SRC = os.path.join(HERE, "mod", "GenFields")
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dll"); ap.add_argument("--scene", action="append", default=[]); ap.add_argument("--campaign"); ap.add_argument("--late", action="append", default=[])
-    ap.add_argument("--remove", action="store_true")
+    ap.add_argument("--remove", action="store_true"); ap.add_argument("--assets")
     a = ap.parse_args()
     config.require_game()
     running = config.game_processes()
@@ -46,6 +48,9 @@ def main():
         print("DLL installed")
     elif not os.path.isfile(os.path.join(MODULE, "bin", "Win64_Shipping_Client", "GenFields.dll")):
         print("warning: no DLL installed yet (pass --dll); the module will not load without it")
+    if a.assets:
+        import assetpack
+        print(assetpack.Stage(a.assets).install(MODULE, "custom"), "custom asset packages installed")
     names = []
     for n in a.scene:
         src = os.path.join(config.SDK_STAGE_DIR, "scenes", n)
@@ -53,6 +58,10 @@ def main():
         dst = os.path.join(MODULE, "SceneObj", n)
         if os.path.isdir(dst): shutil.rmtree(dst)
         shutil.copytree(src, dst); names.append(n); print("scene", n, "installed")
+        # The game keeps the terrain shader it compiled for a scene, by module and scene name. A scene whose texture layers
+        # changed (other textures, other flags) would go on using the old one: black or wrongly mapped ground.
+        cache = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Mount and Blade II Bannerlord", "Shaders", "TerrainShaders", "GenFields", n)
+        if os.path.isdir(cache): shutil.rmtree(cache); print("terrain shader cache of", n, "cleared")
     for n in a.late:
         dst = os.path.join(MODULE, "SceneObj", n)
         if os.path.isdir(dst): shutil.rmtree(dst)

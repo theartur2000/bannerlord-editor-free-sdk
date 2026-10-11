@@ -20,7 +20,9 @@ Layout, worked out from the files of game v1.4.8.119303:
       MIDX  4 x [u32 length, PNG 8-bit grey, (nodes_x * 256) x (nodes_y * 256)]
       HGHT  per node [u32 length, PNG 16-bit grey 257 x 257]
       NRML  per node [u32 length, PNG RGBA 257 x 257]: x in red, y in green, blue 63, alpha 0
-      WGHT  per node, for every terrain layer of the scene in order: u32 present, then if present [u32 length, PNG 8-bit grey 257 x 257]
+      WGHT  per node 16 layer slots in the scene's layer order, whatever the number of layers: u32 present, then if present
+            [u32 length, PNG 8-bit grey 257 x 257]. The game reads all 16: a node with fewer makes it read past the node
+            (usually zeros, sometimes not: a crash on load now and then, in its image resize at client +0x53f8ee)
       PHYM  per node 4 x [u32 index 0..3, u32 length (66049), 257 x 257 bytes]: one material index map per season
 
 A node covers node_size metres with 257 x 257 samples on battlefields (other scenes also use 129, 65, ...: the size is
@@ -45,6 +47,7 @@ else:
     from . import tpac
 
 TAGS = ("MIDX", "HGHT", "NRML", "WGHT", "PHYM")
+LAYER_SLOTS = 16      # weight slots per node; the game reads this many however few layers the scene has
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 NODE = 257
 SEASONS = 4
@@ -316,7 +319,8 @@ def build(data, lz4=None):
     pay = {"MIDX": [b"".join(_blob(png_encode(m)) for m in data["index_maps"])],
            "HGHT": [_blob(png_encode(h)) for h in data["heights"]],
            "NRML": [_blob(png_encode(v)) for v in data["normals"]],
-           "WGHT": [b"".join(struct.pack("<I", 0) if w is None else struct.pack("<I", 1) + _blob(png_encode(w)) for w in layers)
+           "WGHT": [b"".join(struct.pack("<I", 0) if w is None else struct.pack("<I", 1) + _blob(png_encode(w))
+                             for w in list(layers) + [None] * (LAYER_SLOTS - len(layers)))
                     for layers in data["weights"]],
            "PHYM": [b"".join(struct.pack("<2I", s, p[s].size) + np.ascontiguousarray(p[s]).tobytes() for s in range(SEASONS))
                     for p in data["physics"]]}
@@ -391,6 +395,10 @@ def check(path, full=True, log=print):
     t = Terrain(path); res = {}
     pngs = {"HGHT": t.height_pngs(), "NRML": t.normal_pngs(), "MIDX": t.index_pngs(),
             "WGHT": [p for layers in t.weight_pngs() for p in layers if p is not None]}
+    slots = [len(layers) for layers in t.weight_pngs()]
+    if slots:
+        good = sum(k == LAYER_SLOTS for k in slots); res["weight slots"] = (good, len(slots))
+        if good != len(slots): log("  WGHT: %d of %d nodes do not have %d layer slots (the game reads past them)" % (len(slots) - good, len(slots), LAYER_SLOTS))
     for tag, lst in pngs.items():
         same = sum(png_encode(png_decode(p)) == p for p in lst)
         res["png " + tag] = (same, len(lst)); log("  %s PNGs re-encoded identical: %d of %d" % (tag, same, len(lst)))

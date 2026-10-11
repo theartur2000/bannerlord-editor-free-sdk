@@ -8,6 +8,7 @@
 //   swap=<id>    at the main menu, overwrite the files of the scene named by scene= (installed before the game started)
 //                with the staged scene <id>: the test of a pool of scene folders rewritten before a battle
 //   tod=<hour>   time of day of the battle (the nearest one Custom Battle offers)
+//   season=<id>  season of the battle: summer, fall, winter, spring (winter shows the snow layers)
 //   views        before anything else in the battle, look at the scene from the viewpoints listed in the scene folder's
 //                views.txt (name, eye x y z, target x y z per line) and take a screenshot of each
 //   fight        finish deployment, order the player's side to charge, let the AI play the player
@@ -130,6 +131,27 @@ namespace GenFields
                 }
                 if (best >= 0) ts.GetType().GetProperty("SelectedIndex").SetValue(ts, best);
                 Log.Write("time of day " + bestT);
+            }
+            string season = Word("season");
+            if (season != null)
+            {
+                object mg = vm.GetType().GetProperty("MapSelectionGroup").GetValue(vm);
+                object ss = mg.GetType().GetProperty("SeasonSelection").GetValue(mg);
+                int i = 0, hit = -1; string seen = "";
+                foreach (object it in (System.Collections.IEnumerable)ss.GetType().GetProperty("ItemList").GetValue(ss))
+                {
+                    string id = null;
+                    foreach (string prop in new[] { "SeasonId", "StringItem" })
+                    {
+                        PropertyInfo pi = it.GetType().GetProperty(prop);
+                        if (pi != null && pi.GetValue(it) != null) { id = pi.GetValue(it).ToString(); break; }
+                    }
+                    seen += (id ?? "?") + " ";
+                    if (hit < 0 && id != null && id.ToLowerInvariant().Contains(season.ToLowerInvariant())) hit = i;
+                    i++;
+                }
+                if (hit >= 0) ss.GetType().GetProperty("SelectedIndex").SetValue(ss, hit);
+                Log.Write("season " + season + (hit >= 0 ? " selected" : " NOT OFFERED") + " (offered: " + seen.Trim() + ")");
             }
             Log.Write("ExecuteStart");
             vm.GetType().GetMethod("ExecuteStart").Invoke(vm, null);

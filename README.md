@@ -1,16 +1,30 @@
-# Bannerlord editor-free asset SDK
+# Bannerlord editor-free SDK
 
-Python tools that write Mount & Blade II: Bannerlord's asset files directly, without the Modding Kit editor.
-Give it PNG, FBX or glTF files and it produces the `.tpac` packages and `.rdc` caches the game loads from your own module.
+Python tools that write Mount & Blade II: Bannerlord's asset and scene files directly, without the Modding Kit editor.
+Give it PNG, FBX, glTF or PSK files and it produces the `.tpac` packages and `.rdc` caches the game loads from your own
+module. Give it arrays and it writes a whole scene: terrain, navmesh, texture layers, entities, spawn paths.
 
 The editor's Resource Browser import takes seconds to minutes per asset and needs a person at the mouse. These scripts
 take seconds per asset and run unattended, which is what makes a mod with tens of thousands of assets practical.
 
-**No game content is included.** Everything is read from, and generated against, your own install.
+**No game content is included.** Everything is read from, and generated against, your own install. The screenshots
+in this page show the games running; their models and textures are not in the repository.
+
+![A generated valley in the unmodified game](docs/images/valley.jpg)
+
+*A battlefield written by `demos/battlefields/procgen.py`, running in the unmodified game. More under
+"Scenes and generated battlefields".*
 
 ## What it does
 - **Writes assets:** textures (BC1, BC3, BC4, BC5, BC7, RGBA8), materials, static and skinned meshes, skeletons with
   ragdoll physics, skeletal animations, animation clips and their runtime caches.
+- **Writes scenes:** `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays, layer masks and entity lists,
+  with a shipped scene as the template for texture layers and atmosphere. The readers rebuild the game's own files byte
+  for byte.
+- **Reads what the game ships:** the campaign map as a height and biome field, every battle scene and how it places its
+  rocks, and the geometry of any shipped mesh (used to fit rocks to the ground so nothing hangs in the air).
+- **Custom models and textures in scenes:** a stage of your own textures, materials and models (PSK or FBX), terrain
+  layers painted with them, models placed as entities, the ground raised under them as their collision.
 - **Checks them before the game does:** validators for the faults the native client turns into crashes or freezes
   (bone counts, the hit-IK rule, clip name length, clip partners, `project.mbproj` registration, monster bones).
 - **Installs safely:** backup, manifest and one-command revert; refuses to run while the game is open.
@@ -32,13 +46,69 @@ python sdk/install.py install --dry                     # see what would be copi
 
 ## Status
 Written against Bannerlord v1.4.8.119303 (Steam, Windows, single player). Other versions are unverified. The formats are
-verified by byte-identical round trips against the game's own files (see "Self-test"). The original scripts built a large
-mod that runs in game; this packaged copy has passed the self-test but has not itself been run in the game yet.
+verified by byte-identical round trips against the game's own files (see "Self-test"). The original asset scripts built a
+large mod that runs in game. Of this packaged copy, the scene side has been run in the unmodified game (generated
+battlefields, 200 against 200, custom textures and models: see below); the asset commands of `sdk/install.py` have
+passed the self-test but have not been run in the game from this copy.
+
+## Scenes and generated battlefields
+`demos/battlefields/procgen.py` is the tech demo built on the scene tools: it invents a battlefield from a few rules
+(biome, how rugged, how wooded, river or sea) and writes a scene folder the game loads. Nothing in it is hand-placed.
+
+```powershell
+python demos/battlefields/procgen.py --biome Plain --kind valley --rugged 0.8 --forest 0.25 --seed 311 --name my_valley --preview my_valley.png
+python demos/battlefields/procgen.py --map 380 420 --name here      # rules read from that spot of the campaign map
+python demos/battlefields/install.py --dll <folder with GenFields.dll> --scene my_valley    # game closed; lists it in Custom Battle
+```
+
+| | |
+|---|---|
+| ![Steppe valley](docs/images/steppe.jpg) | ![River crossing](docs/images/crossing.jpg) |
+| ![Mountain shelf in winter](docs/images/snow.jpg) | ![Desert](docs/images/desert.jpg) |
+
+What goes into a field (details and measurements in [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md)):
+- **Layouts:** ridge, valley, hill, river crossing, forest clearing, mountain pass, coastal bluff, broken ground, mesas,
+  and a mountain shelf with a sheer drop on one side (the game's own fall damage does the rest).
+- **Natural shapes:** Perlin noise, domain warping, stream-power erosion with randomised downhill routing, thermal
+  erosion, Poisson-disk scatter, and small relief quilted from the shipped battlefields of the biome.
+- **Rocks that sit in the ground:** which rock, how big, how deep and turned which way is measured from the shipped
+  scenes; each one is then fitted to the terrain from its real mesh and earth is banked over its open edges.
+- **Ground cover:** the template's grass and plant models are painted as widely as the shipped scene paints them; rock
+  textures are projected from six sides so cliffs do not stretch into stripes; winter shows the snow layers.
+- **For the battle:** navmesh, spawn paths, a border, high-ground and chokepoint markers for the AI.
+
+### A field made only of custom assets
+`demos/bl2field/build.py` runs the same generator with a palette of custom ground textures, rocks and plants. The worked
+example uses Borderlands 2 models and textures read from umodel exports of your own copy of that game; none of them are
+in this repository.
+
+![A field built only from Borderlands 2 models and textures](docs/images/bl2field.jpg)
+
+```powershell
+python demos/bl2field/build.py --export <umodel export folder> --sets <ground texture sets> --kind valley --seed 7
+python demos/battlefields/install.py --scene bl2_field --assets "<SDK home>\stage\bl2field_assets"
+```
+
+### Engine rules found while building this
+Each of these cost a crash or a black screen to find; the tools now follow them.
+- **16 layer slots:** a terrain node always holds 16 weight slots, however few layers the scene has. With fewer, the
+  game reads past the node and now and then crashes on load.
+- **Late scene folders:** a scene folder that did not exist when the game started cannot be loaded; one that existed
+  can be rewritten while the game runs.
+- **One-sided rocks:** most shipped rocks are open shells. The shipped scenes turn every cliff piece the same way on a
+  slope (yaw = downhill + 90 degrees) and still leave about a third of the rim in the air, out of sight.
+- **`AssetSources`:** the game reads a module's `Assets` folder and its caches only if the module also has an
+  `AssetSources` folder.
+- **Terrain shader cache:** the game keeps the terrain shader it compiled per module and scene name under
+  `ProgramData`. Change a scene's layers and the old shader stays: clear it (`install.py` does).
+- **Area map `none`:** a terrain layer without an area map must name it `none`; an empty name paints the terrain black.
+- **Winding:** an Unreal mesh mirrored into the game's right-handed space keeps its triangle order.
 
 ## Where this is going
 This repository is growing from an asset SDK into a headless Bannerlord editor: scenes, terrain, a bridge into the running engine,
-and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The first tech demo to be built with it is a standalone mod that generates
-each battlefield from the spot on the world map where the battle starts: [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md). Both are plans, not features yet.
+and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The battlefield generator
+above is the first tech demo; it runs offline in Python today (20 to 40 s a field). The next step is the same generator
+inside the game, writing a fresh field in the loading screen before each campaign battle.
 
 ## Background reading
 The formats and the engine rules behind the validators are written up in the
@@ -50,8 +120,9 @@ The formats and the engine rules behind the validators are written up in the
 [the Borderlands 2 conversion this code came from](https://github.com/rehan-remade/universal-modder/blob/main/knowledge/games/mount-and-blade-ii-bannerlord/bannerlord-borderlands-2-total-conversion.md).
 
 ## Requirements
-- Python 3.10+ and `numpy` (the only third-party package: `pip install -r requirements.txt`). LZ4 and
-  xxHash64 are small pure-Python implementations, PNG reading and writing is in `sdk/pngio.py`.
+- Python 3.10+ and `numpy` (`pip install -r requirements.txt`). LZ4 and xxHash64 are small pure-Python
+  implementations, PNG reading and writing is in `sdk/pngio.py`. `Pillow` is needed only for pictures: previews of
+  terrains and battlefields, and `sdk/assetpack.py` (it resizes and converts source textures).
 - Mount & Blade II: Bannerlord on Windows. The Modding Kit is **not** needed.
 - For `dump/`: `pip install minidump`; Ghidra and JDK 21 only for `RE.java`.
 - For `harness/`: PowerShell 5.1 and a matching C# part in your module (not included, see "Harness").
@@ -130,8 +201,13 @@ python sdk/install.py status
 | `sdk/navmesh.py` | `navmesh.bin` reader and writer: vertices, edges, faces with their group, value and flags; `info`, `check` |
 | `sdk/terraform.py` | building blocks for making terrain: filters, slope, small relief quilted from donor terrains, layer masks |
 | `sdk/catalog.py` | what the installed game offers to build from: its battle scenes by terrain type, their prefabs, and how they place each rock |
-| `sdk/scenebuild.py` | a complete scene folder from arrays, with a shipped scene as the template for layers and atmosphere |
-| `demos/battlefields/` | tech demo built with the SDK, not part of it: a battlefield generated from a world map position, and the GenFields test module |
+| `sdk/scenebuild.py` | a complete scene folder from arrays, with a shipped scene as the template for layers and atmosphere; `edit_layer` changes a layer's textures, detail meshes and flags |
+| `sdk/meshread.py` | the geometry of any shipped mesh by name, straight from the game's packages, and its open edges; `info`, `obj`, `index` |
+| `sdk/rockfit.py` | fits a rock to the ground from its real shape: least rim in the air, earth banked over the rest, ground raised under a custom model as its collision |
+| `sdk/psk.py` | PSK / PSKX static meshes (umodel, Unreal exporters) into the SDK's submesh form; `info` |
+| `sdk/assetpack.py` | a stage of custom textures, materials and models for a scene, and its install into a module |
+| `demos/battlefields/` | tech demo built with the SDK, not part of it: `procgen.py` invents battlefields, `lineup.py` shows every rock alone, `install.py` and `test.ps1` put them into the GenFields test module and run them |
+| `demos/bl2field/` | the same generator fed only custom assets (worked example: Borderlands 2 exports from your own copy) |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |
 | `sdk/validate.py` | validators: stage, skeleton, clip, `project.mbproj` registration, monster bones |
 | `sdk/clip_partners.py` | the clip partner rule against Native's clips |
@@ -204,9 +280,9 @@ Things that stay specific to a workflow rather than generic: skinned FBX bones m
 are written for clips with a root position channel.
 
 ## Harness
-`harness/` is reference material. It drives the game through a module-side "autostart" file and test words,
-and it needs a matching C# part in your module that this repository does not include; the notes under "Background reading"
-describe what the original one did.
+`harness/` drives the game through a module-side "autostart" file and test words. It needs a matching C# part in the
+module under test; the GenFields demo module has one (below), and the notes under "Background reading" describe what
+the original one did.
 
 How it works: the game is launched with
 `/singleplayer _MODULES_*Native*SandBoxCore*CustomBattle*<YourModule>*_MODULES_` so the launcher's saved mod
@@ -225,9 +301,13 @@ powershell -ExecutionPolicy Bypass -File harness\night_test.ps1 -Module MyMod -W
     -LogFile "$env:BANNERLORD_MODULE_DIR\mymod_log.txt" -DryRun       # without the game: checks the harness itself
 ```
 
-The harness never sends input, stops only the process it started, and reports any change in the save folder
-(new files are moved aside, never deleted). It does not answer game dialogs (the "enable safe mode" prompt after
-a crash needs a person or a UI-automation helper).
+The harness stops only the process it started and reports any change in the save folder (new files are moved aside,
+never deleted). `dialogs.ps1` answers the three prompts that would stall an unattended run: "enable safe mode" after a
+crash (No), the shader cache notice (OK) and the crash report prompt (No). It sends no other input.
+
+A complete module-side example is in `demos/battlefields/mod/GenFields`: its `AutoTest.cs` reads the autostart words,
+opens a Custom Battle on a named scene, moves the player through a list of viewpoints taking screenshots, lets the
+armies fight for a set time and quits. `demos/battlefields/test.ps1` runs it with only that module added to the game.
 
 ## Crash dumps and reverse engineering
 `dump/` holds the minidump helpers (`threads.py`, `unwind.py`, `loc.py`, `rd.py`, `huge.py`, `vt.py`) and
@@ -244,7 +324,9 @@ instead.
 ## Files
 ```
 sdk/            the library and command-line tools (listed above)
-harness/        night_test.ps1, run_bannerlord_test.ps1, bannerlord_test_config.ps1, game_lock.ps1,
+demos/          battlefields/ (the generator, the GenFields test module), bl2field/ (a field of custom assets only)
+docs/           ROADMAP.md, BATTLEFIELDS.md, images/
+harness/        night_test.ps1, run_bannerlord_test.ps1, bannerlord_test_config.ps1, game_lock.ps1, dialogs.ps1,
                 player_checks.ps1, checks.example.json
 dump/           minidump helpers, RE.java, re.ps1, README.txt
 requirements.txt

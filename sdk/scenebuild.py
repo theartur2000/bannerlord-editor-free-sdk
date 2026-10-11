@@ -43,6 +43,26 @@ class Template:
         self.enabled = {s: [(l.find(s) is not None and l.find(s).get("is_enabled") == "true") for l in self.layers] for s in SEASONS}
         self.flora_layers = [i for i, l in enumerate(self.layers) if l.find("summer") is not None and l.find("summer").get("is_flora_layer") == "true"]
         self.physics = [(l.find("summer").get("physics_material") if l.find("summer") is not None else None) for l in self.layers]
+        # the detail meshes (grass, plants, small stones, trees) the engine scatters where a layer is painted at more than half strength
+        self.meshes = []
+        for l in self.layers:
+            m = l.find("summer").find("meshes") if l.find("summer") is not None else None
+            self.meshes.append([x.get("name") for x in m.elements("mesh")] if m is not None else [])
+        self._coverage = None
+
+    def coverage(self):
+        """Per layer, the share of the template's own map that is painted with it at more than half strength."""
+        if self._coverage is None:
+            W = terrain.Terrain(os.path.join(self.folder, "terrain.bin")).weight_nodes(); out = []
+            for i in range(len(self.layers)):
+                tot = n = 0
+                for node in W:
+                    a = node[i] if i < len(node) else None
+                    if a is None: n += 1; continue
+                    tot += float((a > 127).mean()); n += 1
+                out.append(tot / max(n, 1))
+            self._coverage = out
+        return self._coverage
 
     @property
     def size(self): return (self.nx * self.node_size, self.ny * self.node_size)
@@ -96,8 +116,37 @@ def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
     return navmesh.NavMesh.from_polygons(np.asarray(verts, np.float32).reshape(-1, 3), polys), keep
 
 
+def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None):
+    """Changes one terrain texture layer (a <layer> element) in every season it defines.
+    six_side   True: the texture is projected from six sides instead of from above, so it does not stretch into stripes
+               on steep ground (the shipped scenes set it on their rock layers)
+    textures   {"diffusemap" | "normalmap" | "specularmap" | "displacementmap" | "areamap" | "splattingmap": texture name}
+    meshes     the detail meshes the engine scatters where the layer is painted at more than half strength: a list of
+               dicts of <mesh> attributes (name, density, size_min, size_max, ...); replaces the layer's list
+    attrs      attributes of the season element itself (scale, physics_material, parallax_amount, ...)"""
+    for season in SEASONS:
+        se = layer.find(season)
+        if se is None: continue
+        for k, v in (attrs or {}).items(): se.set(k, v)
+        if six_side is not None and se.find("layer_flags") is not None:
+            for f in se.find("layer_flags").elements("flag"):
+                if f.get("name") == "use_six_side_uv_mapping": f.set("value", "true" if six_side else "false")
+        if textures and se.find("textures") is not None:
+            for x in se.find("textures").elements("texture"):
+                if x.get("type") in textures: x.set("name", textures[x.get("type")])
+        if meshes is not None:
+            me = se.find("meshes")
+            if me is None: me = se.append(scene.Element("meshes"))
+            for x in list(me.elements()): me.remove(x)
+            for n, m in enumerate(meshes):
+                d = {"index": str(n), "density": "20.000", "seed_index": str(n + 2), "colony_radius": "0.000", "colony_threshold": "0.000",
+                     "size_min": "0.800, 0.800, 0.800", "size_max": "1.200, 1.200, 1.200", "albedo_multiplier": "1.000, 1.000, 1.000", "weight_offset": "0.500"}
+                d.update({k: str(v) for k, v in m.items()})
+                me.append(scene.Element("mesh", [["name", d.pop("name")]] + [[k, v] for k, v in d.items()]))
+
+
 def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths=(), border=(), walkable=None,
-          nav_step=4.0, nav_max_slope=0.75, water_level=None, author="bannerlord-editor-free-sdk", log=print):
+          nav_step=4.0, nav_max_slope=0.75, water_level=None, layer_edits=None, author="bannerlord-editor-free-sdk", log=print):
     """Writes the scene folder out_dir for a scene called `name`.
 
     heights      float array in metres, shape template.samples (row = y)
@@ -107,6 +156,7 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
     border       [(x, y), ...]: the walkable area's corners (the game sorts them around their centre)
     walkable     bool array: where the navmesh may go (default: inside the border)
     water_level  metres: the one water surface of the scene (None: the setting of the template, usually no water)
+    layer_edits  {layer index: keyword arguments of edit_layer}: changes to the template's texture layers
     Returns a dict of what was written."""
     t = template; masks = dict(masks or {})
     assert heights.shape == t.samples, (heights.shape, t.samples)
@@ -149,6 +199,9 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
             node.set("layer_is_used_mask_" + season, sum(1 << i for i in range(L) if present[k][i] and t.enabled[season][i]))
         node.set("height_complexity", "%.3f" % min(1.0, 1.1 * float(terraform.slope(zz, cell).mean())))
         node.set("min_height", "%.3f" % float(zz.min())); node.set("max_height", "%.3f" % float(zz.max()))
+    if layer_edits:
+        lay = ter.find("layers").elements("layer")
+        for i, kw in layer_edits.items(): edit_layer(lay[i], **kw)
     if water_level is not None:
         wp = doc.root.find("environment_properties").find("water_properties")
         for pr in wp.elements("property"):
