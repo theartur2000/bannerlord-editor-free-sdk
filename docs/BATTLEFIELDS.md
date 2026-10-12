@@ -231,6 +231,47 @@ ground, river crossing, forest clearing, coastal bluff; and one field built only
 **Open.** Generation takes 20 to 40 s in Python, about half of it erosion and rock fitting; the target is 10 s in the
 loading screen, which means the C# port. Spawn sides are not checked for fairness. The test shows ground-level views only.
 
+## 5d. The first playtest and the in-game generator (2026-10-11)
+
+**What a player found in the first campaign hour, and what it was** (marked in game with F10, which logs the position):
+- Bare, shiny ground without grass: the grass layer with models covered 40 % of a valley floor (shipped 63 %), in
+  patches of 24 to 37 m (shipped 8 m: brush dabs), and two or three grass textures were blended at half strength.
+  Fix: every ground layer gets the template's own distribution of strengths, separately for the fighting area and the
+  outskirts (`Template.paint_stats`), and the grass with models is laid in dabs.
+- Too few bushes: plant density among the grass tripled (`edit_layer(mesh_density=...)`).
+- Lumpy riding: small relief on gentle ground was 4.7 m rms against 1.5 to 2.5 m in shipped maps; scaled down.
+- Fell through the map: the rider was 5.3 m under a bank of earth piled over a rock's rim. The rock's solid body goes on
+  under the bank, and an agent on it walks on under the terrain. Earth is now never banked more than 0.35 m above any
+  rock's surface (`rockfit.top_surface`), and the module lifts agents found 1.5 m under the terrain.
+- A river field with no river on the map: river and coast layouts only where the map has them.
+
+**In a campaign the game chooses where the armies form up** (`BattleSpawnPathSelector`): of the scene's spawn paths the one
+that best matches the direction the parties met from, and on it a pivot nearest to where the party stands in the map
+tile; both sides are then set at equal distances from the pivot, shifted to stay on the path. So every path a scene
+offers is a line the armies may really stand on: only clean bearings are offered, and layouts with one way through
+offer only bearings near their axis.
+
+**The generator in C#** (`mod/GenFields/src/gen`: Core, Rocks, Data, Files, Generator; 1,400 lines, no engine calls).
+Same steps as `procgen.py`. Per field on the author's machine, all thirty biome and layout combinations: 1.25 to 1.81 s.
+A typical run in milliseconds: landforms 80, warp and frame 80, relief 10, fluvial erosion 175, thermal 25, grain 80,
+shaping 45, rock spots 90, rocks 195, paint 195, forest 60, packing 60, terrain.bin 160, navmesh 270, scene text 45.
+The Python reference took 40 s for the same field under the profiler: 9 s in its pure-Python LZ4, 8 s in noise, 7.5 s
+in FFT blurs, 6 s rasterising rock triangles, 3.5 s decoding donor terrains (now prepared ahead by `livedata.py`).
+Output checked with the Python readers (scene, terrain, navmesh all valid) and by measurement against the Python field
+of the same rules: grass with models 61.8 % against 62.7 %, bumps 3.22 m against 3.21 m.
+
+**Live generation** (`Live.cs`): at `GetBattleSceneForMapPatch` the module samples the world map's terrain types on
+sixteen bearings out to 18 map units, derives biome, ruggedness, forest, river or coast and the direction of the water,
+generates, and returns the slot's scene name. In game: 1.6 to 1.8 s; five campaign battles on live fields (plains,
+desert, steppe with a river) loaded and were fought.
+
+**The engine holds a loaded scene's terrain file.** After a battle the slot's `terrain.bin` could not be rewritten:
+sharing violation. Measured over four battles in one session with 20 s pauses: every slot loaded once was still held
+90 s and three other scene loads later; the engine's own `ClearOldResourcesAndObjects` at mission end does not release
+it. So a slot takes one field a session. The module carries 64 slots a biome; 60 are placeholders with zero-byte
+`scene.xscene`, `terrain.bin` and `navmesh.bin`, which is enough for the engine to know the folder at startup (proven:
+a campaign battle loaded a field written into such a placeholder). Used placeholders are emptied at the next start.
+
 ## 6. Steps
 
 | Step | What | Proof |

@@ -3,6 +3,8 @@
 // What it does today (steps F0 and F1 of docs/BATTLEFIELDS.md):
 //   - wraps the campaign's SceneModel, the game model that turns a spot on the world map into a battle scene name;
 //   - when Modules/GenFields/genfield.txt names a scene, every field battle goes to that scene;
+//   - otherwise, when the data of the generator is installed (Live.cs), every field battle on land gets a field
+//     generated at that moment from the map around the party (src/gen, about two seconds);
 //   - otherwise, when a pool of generated fields is installed (Pool.cs), every field battle on land goes to a pool field
 //     that fits the spot on the map; naval battles, sieges, villages and hideouts keep the game's own scenes;
 //   - when that scene's folder is not in Modules/GenFields/SceneObj yet, it is copied there from the SDK's stage folder
@@ -33,6 +35,7 @@ namespace GenFields
         {
             base.OnSubModuleLoad();
             Log.Write("GenFields loaded");
+            Live.EmptyPlaceholders();
             AutoTest.Load(ModuleHelper.GetModuleFullPath(ModuleId));
         }
 
@@ -46,7 +49,7 @@ namespace GenFields
         {
             base.OnMissionBehaviorInitialize(mission);
             if (AutoTest.On) mission.AddMissionBehavior(new AutoMissionLogic());
-            try { if (Pool.Has(mission.SceneName)) mission.AddMissionBehavior(new FieldNoteLogic()); } catch (Exception e) { Log.Write("field note not added: " + e.Message); }
+            try { if (Live.IsSlot(mission.SceneName) || Pool.Has(mission.SceneName)) mission.AddMissionBehavior(new FieldNoteLogic()); } catch (Exception e) { Log.Write("field note not added: " + e.Message); }
         }
 
         protected override void OnGameStart(Game game, IGameStarter gameStarter)
@@ -81,6 +84,11 @@ namespace GenFields
                 string where = "?";
                 try { var p = MobileParty.MainParty.Position.ToVec2(); where = p.x.ToString("F2") + ", " + p.y.ToString("F2"); } catch { }
                 string forced = isNavalEncounter ? null : Control.ForcedScene();
+                if (forced == null && !isNavalEncounter && Live.On)
+                {
+                    string made = Live.Generate(Live.RulesHere());        // a new field for this battle, made now
+                    if (made != null) { Log.Write("battle at map position " + where + ", native scene " + native + ", sent to the field just generated in " + made); return made; }
+                }
                 if (forced == null && !isNavalEncounter)
                 {
                     string picked = Pool.Pick();        // a generated field that fits this spot of the map

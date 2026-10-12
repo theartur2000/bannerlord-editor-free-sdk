@@ -134,8 +134,8 @@ namespace GenFields
                 if (!_said && _t > 2f)
                 {
                     _said = true;
-                    InformationManager.DisplayMessage(new InformationMessage("Battlefield: " + Pool.Describe(Mission.SceneName) + "   F10 marks a spot"));
-                    Log.Write("battle on pool scene " + Mission.SceneName);
+                    InformationManager.DisplayMessage(new InformationMessage("Battlefield: " + (Live.IsSlot(Mission.SceneName) ? Live.Describe(Mission.SceneName) + ", generated for this battle" : Pool.Describe(Mission.SceneName)) + "   F10 marks a spot"));
+                    Log.Write("battle on " + (Live.IsSlot(Mission.SceneName) ? "live field " + Live.Describe(Mission.SceneName) : "pool scene " + Mission.SceneName));
                 }
                 // Nobody stays under the ground. A generated field has no caves or bridges, so an agent more than 1.5 m below
                 // the terrain has got under it (a rock's solid body can lead there) and is put back on the surface.
@@ -164,7 +164,7 @@ namespace GenFields
                     string dir = Path.Combine(home, "out", "genfields_marks"); Directory.CreateDirectory(dir);
                     string shot = Path.Combine(dir, Mission.SceneName + "_" + DateTime.Now.ToString("MMdd_HHmmss") + ".bmp");
                     Utilities.TakeScreenshot(shot);
-                    Log.Write("MARK " + Mission.SceneName + " at " + p.x.ToString("F1", CultureInfo.InvariantCulture) + " " + p.y.ToString("F1", CultureInfo.InvariantCulture) + " " + p.z.ToString("F1", CultureInfo.InvariantCulture)
+                    Log.Write("MARK " + Mission.SceneName + (Live.IsSlot(Mission.SceneName) ? " [" + Live.Describe(Mission.SceneName) + "]" : "") + " at " + p.x.ToString("F1", CultureInfo.InvariantCulture) + " " + p.y.ToString("F1", CultureInfo.InvariantCulture) + " " + p.z.ToString("F1", CultureInfo.InvariantCulture)
                               + " looking " + look.x.ToString("F2", CultureInfo.InvariantCulture) + " " + look.y.ToString("F2", CultureInfo.InvariantCulture) + " " + look.z.ToString("F2", CultureInfo.InvariantCulture) + " shot " + shot);
                     InformationManager.DisplayMessage(new InformationMessage("Spot " + _marks + " marked"));
                 }

@@ -77,6 +77,27 @@ What goes into a field (details and measurements in [docs/BATTLEFIELDS.md](docs/
   textures are projected from six sides so cliffs do not stretch into stripes; winter shows the snow layers.
 - **For the battle:** navmesh, spawn paths, a border, high-ground and chokepoint markers for the AI.
 
+### A new field for every battle, generated in the game
+The generator also exists in C# inside the GenFields module (`demos/battlefields/mod/GenFields/src/gen`, no engine
+calls, also built as a command-line program in `gen_cli`). When a campaign battle starts, the module reads the world
+map around the party (biome, mountains, forest, rivers, coast), generates a field for it and sends the battle there.
+A field takes 1.3 to 1.8 s on the author's machine, against 20 to 40 s for the Python reference.
+
+```powershell
+python demos/battlefields/livedata.py                               # once: what the generator needs from your install
+python demos/battlefields/install.py --dll <folder> --live --pool   # game closed
+```
+
+The speed comes from compiled loops over rows in parallel, box blurs in place of FFT Gaussians, data prepared ahead
+(rock shapes, the template's paint statistics, relief samples of shipped fields), the stream-power erosion on a
+257 x 257 grid, and PNGs written with one fixed filter and the fastest deflate. `GenCli.exe` prints the milliseconds
+of every step.
+
+One slot of the module takes one field a session: once the engine has loaded a scene it keeps that scene's
+`terrain.bin` open until the game exits, shared for reading only. So the module carries 64 scene folders a biome,
+60 of them empty placeholders, and every battle writes into one not yet used; used placeholders are emptied at the
+next start. After 60 live battles in one biome in one session the module falls back to its pool of ready-made fields.
+
 ### A field made only of custom assets
 `demos/bl2field/build.py` runs the same generator with a palette of custom ground textures, rocks and plants. The worked
 example uses Borderlands 2 models and textures read from umodel exports of your own copy of that game; none of them are
@@ -103,12 +124,19 @@ Each of these cost a crash or a black screen to find; the tools now follow them.
   `ProgramData`. Change a scene's layers and the old shader stays: clear it (`install.py` does).
 - **Area map `none`:** a terrain layer without an area map must name it `none`; an empty name paints the terrain black.
 - **Winding:** an Unreal mesh mirrored into the game's right-handed space keeps its triangle order.
+- **Held terrain files:** a scene's `terrain.bin` stays open, read-shared, from its first load until the game exits.
+  A scene folder can be rewritten before its first load in a session, not after.
+- **Empty scene files are enough at startup:** a folder with zero-byte `scene.xscene`, `terrain.bin` and
+  `navmesh.bin` is known to the engine; the real files can be written any time before the scene is loaded.
+- **Campaign spawn lines:** the game picks the spawn path that best matches the direction the parties met from and
+  slides both deployments along it by where the party stands in the map tile.
+- **Earth over rock:** terrain standing above a rock's solid surface lets agents walk on under the ground.
 
 ## Where this is going
 This repository is growing from an asset SDK into a headless Bannerlord editor: scenes, terrain, a bridge into the running engine,
 and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The battlefield generator
-above is the first tech demo; it runs offline in Python today (20 to 40 s a field). The next step is the same generator
-inside the game, writing a fresh field in the loading screen before each campaign battle.
+above is the first tech demo: a Python reference built on the SDK, and its port inside the game that makes a new field
+for every campaign battle.
 
 ## Background reading
 The formats and the engine rules behind the validators are written up in the
@@ -207,6 +235,7 @@ python sdk/install.py status
 | `sdk/psk.py` | PSK / PSKX static meshes (umodel, Unreal exporters) into the SDK's submesh form; `info` |
 | `sdk/assetpack.py` | a stage of custom textures, materials and models for a scene, and its install into a module |
 | `demos/battlefields/` | tech demo built with the SDK, not part of it: `procgen.py` invents battlefields, `lineup.py` shows every rock alone, `install.py` and `test.ps1` put them into the GenFields test module and run them |
+| `demos/battlefields/mod/GenFields/` | the test and demo module: the scene model hook, the in-game generator (`src/gen`), live generation (`Live.cs`), the pool (`Pool.cs`), the unattended tests (`AutoTest.cs`, `CampaignTest.cs`); `gen_cli/` builds the generator as a program |
 | `demos/bl2field/` | the same generator fed only custom assets (worked example: Borderlands 2 exports from your own copy) |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |
 | `sdk/validate.py` | validators: stage, skeleton, clip, `project.mbproj` registration, monster bones |

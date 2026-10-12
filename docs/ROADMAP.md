@@ -129,6 +129,9 @@ Start with B1 to B2: they are small and already make procedural level work possi
 | B7 | battle only |
 | B8 | read only: `sdk/worldmap.py` gives heights, biome types and settlements of the campaign map |
 
+The C# runtime library decided on in section 8 exists as the generator inside the GenFields module
+(`demos/battlefields/mod/GenFields/src/gen`): a new field for every campaign battle in under two seconds.
+
 Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py` (rocks fitted to the ground),
 `sdk/assetpack.py` and `sdk/psk.py` (custom textures, materials and models in scenes), and the battlefield generator
 in `demos/`. See BATTLEFIELDS.md, sections 5a to 5c.

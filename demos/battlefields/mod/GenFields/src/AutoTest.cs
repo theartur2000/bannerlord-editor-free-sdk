@@ -3,6 +3,11 @@
 // When the environment variable BANNERLORD_AUTOTEST is 1 and Modules/GenFields/autostart.txt exists, the words in that file
 // are run and the game quits by itself:
 //   campaign     a campaign battle instead of a Custom Battle (CampaignTest.cs); scene= and tod= do not apply
+//   live=<kind>  generate a field now with the in-game generator and fight on it (kind: valley, ridge, ... or any);
+//                with biome=Plain|Steppe|Desert rugged100= forest100= (percent) water=river|sea seed=
+//   gap=<s>      seconds to wait at the custom battle screen between rounds (to see when the engine lets a slot go)
+//   rounds=<n>   with live=: n battles in one session, each on a newly generated field in the same slot (does the
+//                engine read the slot again?); kind1=, kind2= ... name the layout of the later rounds
 //   scene=<id>   the Custom Battle map to fight on (a scene listed in ModuleData/genfields_custom_battle_scenes.xml)
 //   late=<id>    copy that scene from the SDK's stage folder into the module at the main menu, after the game has started
 //                (the test of loading a scene folder that did not exist at startup; install it with install.py --late)
@@ -98,6 +103,7 @@ namespace GenFields
                     StartBattle(top);
                 }
                 else if (_stage == 1 && _stageT > 120f) Fail("the custom battle screen never came");
+                if (_stage == 1 && _round > 0 && _stageT < 3f) { _heldT += dt; if (_heldT > 2f) { _heldT = 0f; Log.Write("between rounds: held by the engine: " + Live.Held()); } }
             }
             catch (Exception e) { Fail("tick failed: " + e); }
         }
@@ -106,6 +112,15 @@ namespace GenFields
         {
             object vm = screen.GetType().GetField("_dataSource", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(screen);
             string want = Word("scene");
+            string live = Word("live");
+            if (live != null)
+            {
+                var rules = new Gen.FieldRules { Biome = Word("biome") ?? "Plain", Kind = live == "any" ? null : live, Water = Word("water"), Seed = Int("seed", 7) + _round,
+                                                 Rugged = Int("rugged100", 60) / 100f, Forest = Int("forest100", 25) / 100f };
+                if (_round > 0 && Word("kind" + _round) != null) rules.Kind = Word("kind" + _round);
+                want = Live.Generate(rules, true);          // a slot that Custom Battle lists
+                if (want == null) { Fail("live generation failed"); return; }
+            }
             if (want != null)
             {
                 object mg = vm.GetType().GetProperty("MapSelectionGroup").GetValue(vm);
@@ -164,6 +179,22 @@ namespace GenFields
         public static void Fail(string why)
         {
             Log.Write("autotest FAILED: " + why);
+            Done();
+        }
+
+        static int _round; static float _heldT;
+        public static int Round => _round;
+
+        // the end of one battle: the next round on a new field, or the end of the test
+        public static void RoundOver()
+        {
+            if (Word("live") != null && _round + 1 < Int("rounds", 1))
+            {
+                _round++; _stage = 1; _stageT = -4f - Int("gap", 0);          // gap=<s>: seconds at the menu between rounds
+                Log.Write("round " + _round + ": ending the mission, back to the custom battle screen");
+                try { Mission.Current?.EndMission(); } catch (Exception e) { Fail("could not end the mission: " + e.Message); }
+                return;
+            }
             Done();
         }
 
@@ -238,7 +269,7 @@ namespace GenFields
             if (!_viewShot && _viewT > 2f)
             {
                 _viewShot = true;
-                string f = Path.Combine(_shotDir, Mission.SceneName + "_view" + _view + "_" + _views[_view][0] + ".bmp");
+                string f = Path.Combine(_shotDir, Mission.SceneName + (AutoTest.Round > 0 ? "_r" + AutoTest.Round : "") + "_view" + _view + "_" + _views[_view][0] + ".bmp");
                 Utilities.TakeScreenshot(f);
                 Log.Write("view " + _views[_view][0] + " -> " + f);
             }
@@ -296,7 +327,7 @@ namespace GenFields
                 }
                 if (_shot < ShotTimes.Length && ft > ShotTimes[_shot])
                 {
-                    string f = Path.Combine(_shotDir, Mission.SceneName + "_" + _shot + ".bmp");
+                    string f = Path.Combine(_shotDir, Mission.SceneName + (AutoTest.Round > 0 ? "_r" + AutoTest.Round : "") + "_" + _shot + ".bmp");
                     Utilities.TakeScreenshot(f);
                     Log.Write("screenshot " + f);
                     _shot++;
@@ -313,7 +344,7 @@ namespace GenFields
                     _ended = true;
                     Log.Write("battle test over after " + ft.ToString("F0") + " s: alive " + Alive(true) + " vs " + Alive(false) + " of " + _spawnedUs + " vs " + _spawnedThem
                               + (over ? " (one side is gone)" : ""));
-                    AutoTest.Done();
+                    AutoTest.RoundOver();
                 }
             }
             catch (Exception e) { _ended = true; AutoTest.Fail("mission tick failed: " + e); }
