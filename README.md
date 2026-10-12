@@ -12,8 +12,8 @@ in this page show the games running; their models and textures are not in the re
 
 ![A generated valley in the unmodified game](docs/images/valley.jpg)
 
-*A battlefield written by `demos/battlefields/procgen.py`, running in the unmodified game. More under
-"Scenes and generated battlefields".*
+*A battlefield generated with the scene tools by the [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields) mod, running
+in the unmodified game. More under "Scenes and generated battlefields".*
 
 ## What it does
 - **Writes assets:** textures (BC1, BC3, BC4, BC5, BC7, RGBA8), materials, static and skinned meshes, skeletons with
@@ -52,63 +52,36 @@ battlefields, 200 against 200, custom textures and models: see below); the asset
 passed the self-test but have not been run in the game from this copy.
 
 ## Scenes and generated battlefields
-`demos/battlefields/procgen.py` is the tech demo built on the scene tools: it invents a battlefield from a few rules
-(biome, how rugged, how wooded, river or sea) and writes a scene folder the game loads. Nothing in it is hand-placed.
-
-```powershell
-python demos/battlefields/procgen.py --biome Plain --kind valley --rugged 0.8 --forest 0.25 --seed 311 --name my_valley --preview my_valley.png
-python demos/battlefields/procgen.py --map 380 420 --name here      # rules read from that spot of the campaign map
-python demos/battlefields/install.py --dll <folder with GenFields.dll> --scene my_valley    # game closed; lists it in Custom Battle
-```
+The first mod built on the scene tools has its own repository:
+**[Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)**. It invents a battlefield from a few rules (biome, how rugged, how wooded, river or
+sea) and writes a scene folder the game loads; nothing in it is hand-placed. It has a Python generator built on this
+SDK and the same generator in C# inside the game, where every campaign battle gets a new field in under two seconds.
+Until 2026-10-12 its source was the `demos/` folder here.
 
 | | |
 |---|---|
 | ![Steppe valley](docs/images/steppe.jpg) | ![River crossing](docs/images/crossing.jpg) |
 | ![Mountain shelf in winter](docs/images/snow.jpg) | ![Desert](docs/images/desert.jpg) |
 
-What goes into a field (details and measurements in [docs/BATTLEFIELDS.md](docs/BATTLEFIELDS.md)):
-- **Layouts:** ridge, valley, hill, river crossing, forest clearing, mountain pass, coastal bluff, broken ground, mesas,
-  and a mountain shelf with a sheer drop on one side (the game's own fall damage does the rest).
-- **Natural shapes:** Perlin noise, domain warping, stream-power erosion with randomised downhill routing, thermal
-  erosion, Poisson-disk scatter, and small relief quilted from the shipped battlefields of the biome.
-- **Rocks that sit in the ground:** which rock, how big, how deep and turned which way is measured from the shipped
-  scenes; each one is then fitted to the terrain from its real mesh and earth is banked over its open edges.
-- **Ground cover:** the template's grass and plant models are painted as widely as the shipped scene paints them; rock
-  textures are projected from six sides so cliffs do not stretch into stripes; winter shows the snow layers.
-- **For the battle:** navmesh, spawn paths, a border, high-ground and chokepoint markers for the AI.
+What it takes from the SDK:
+- **The scene folder:** `sdk/scenebuild.py` writes `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays,
+  layer weights and entity lists, with a shipped scene as the template for texture layers and atmosphere.
+- **Natural shapes:** `sdk/terraform.py` has the noise, domain warping, stream-power and thermal erosion, Poisson-disk
+  scatter and the small relief quilted from shipped battlefields.
+- **What the shipped scenes do:** `sdk/catalog.py` measures which rock each biome uses, how big, how deep and turned
+  which way; `Template.paint_stats` measures how strongly a shipped scene paints each ground layer.
+- **Rocks that sit in the ground:** `sdk/meshread.py` reads the real mesh of a rock and `sdk/rockfit.py` fits it to the
+  terrain and banks earth over its open edges, never above the rock's own surface.
+- **The campaign map as rules:** `sdk/worldmap.py` gives height, biome and water at any spot of the map.
 
-### A new field for every battle, generated in the game
-The generator also exists in C# inside the GenFields module (`demos/battlefields/mod/GenFields/src/gen`, no engine
-calls, also built as a command-line program in `gen_cli`). When a campaign battle starts, the module reads the world
-map around the party (biome, mountains, forest, rivers, coast), generates a field for it and sends the battle there.
-A field takes 1.3 to 1.8 s on the author's machine, against 20 to 40 s for the Python reference.
-
-```powershell
-python demos/battlefields/livedata.py                               # once: what the generator needs from your install
-python demos/battlefields/install.py --dll <folder> --live --pool   # game closed
-```
-
-The speed comes from compiled loops over rows in parallel, box blurs in place of FFT Gaussians, data prepared ahead
-(rock shapes, the template's paint statistics, relief samples of shipped fields), the stream-power erosion on a
-257 x 257 grid, and PNGs written with one fixed filter and the fastest deflate. `GenCli.exe` prints the milliseconds
-of every step.
-
-One slot of the module takes one field a session: once the engine has loaded a scene it keeps that scene's
-`terrain.bin` open until the game exits, shared for reading only. So the module carries 64 scene folders a biome,
-60 of them empty placeholders, and every battle writes into one not yet used; used placeholders are emptied at the
-next start. After 60 live battles in one biome in one session the module falls back to its pool of ready-made fields.
-
-### A field made only of custom assets
-`demos/bl2field/build.py` runs the same generator with a palette of custom ground textures, rocks and plants. The worked
-example uses Borderlands 2 models and textures read from umodel exports of your own copy of that game; none of them are
-in this repository.
+The same generator fed a palette of custom ground textures, rocks and plants (`sdk/assetpack.py`, `sdk/psk.py`) makes
+a field with nothing of Bannerlord's in it. The mod's worked example reads Borderlands 2 models and textures from
+umodel exports of your own copy of that game:
 
 ![A field built only from Borderlands 2 models and textures](docs/images/bl2field.jpg)
 
-```powershell
-python demos/bl2field/build.py --export <umodel export folder> --sets <ground texture sets> --kind valley --seed 7
-python demos/battlefields/install.py --scene bl2_field --assets "<SDK home>\stage\bl2field_assets"
-```
+How the fields are built, with every measurement, is in the mod's
+[BATTLEFIELDS.md](https://github.com/theartur2000/bannerlord-procedural-battlefields/blob/main/docs/BATTLEFIELDS.md).
 
 ### Engine rules found while building this
 Each of these cost a crash or a black screen to find; the tools now follow them.
@@ -121,7 +94,7 @@ Each of these cost a crash or a black screen to find; the tools now follow them.
 - **`AssetSources`:** the game reads a module's `Assets` folder and its caches only if the module also has an
   `AssetSources` folder.
 - **Terrain shader cache:** the game keeps the terrain shader it compiled per module and scene name under
-  `ProgramData`. Change a scene's layers and the old shader stays: clear it (`install.py` does).
+  `ProgramData`. Change a scene's layers and the old shader stays: clear it (the mod's `tools/install.py` does).
 - **Area map `none`:** a terrain layer without an area map must name it `none`; an empty name paints the terrain black.
 - **Winding:** an Unreal mesh mirrored into the game's right-handed space keeps its triangle order.
 - **Held terrain files:** a scene's `terrain.bin` stays open, read-shared, from its first load until the game exits.
@@ -234,9 +207,6 @@ python sdk/install.py status
 | `sdk/rockfit.py` | fits a rock to the ground from its real shape: least rim in the air, earth banked over the rest, ground raised under a custom model as its collision |
 | `sdk/psk.py` | PSK / PSKX static meshes (umodel, Unreal exporters) into the SDK's submesh form; `info` |
 | `sdk/assetpack.py` | a stage of custom textures, materials and models for a scene, and its install into a module |
-| `demos/battlefields/` | tech demo built with the SDK, not part of it: `procgen.py` invents battlefields, `lineup.py` shows every rock alone, `install.py` and `test.ps1` put them into the GenFields test module and run them |
-| `demos/battlefields/mod/GenFields/` | the test and demo module: the scene model hook, the in-game generator (`src/gen`), live generation (`Live.cs`), the pool (`Pool.cs`), the unattended tests (`AutoTest.cs`, `CampaignTest.cs`); `gen_cli/` builds the generator as a program |
-| `demos/bl2field/` | the same generator fed only custom assets (worked example: Borderlands 2 exports from your own copy) |
 | `sdk/tpac_pack.py` | merge many packages into a few and prove the merge; `scan`, `pack`, `verify`, `install`, `unpack`, `native-check`, `logcheck` |
 | `sdk/validate.py` | validators: stage, skeleton, clip, `project.mbproj` registration, monster bones |
 | `sdk/clip_partners.py` | the clip partner rule against Native's clips |
@@ -334,9 +304,10 @@ The harness stops only the process it started and reports any change in the save
 never deleted). `dialogs.ps1` answers the three prompts that would stall an unattended run: "enable safe mode" after a
 crash (No), the shader cache notice (OK) and the crash report prompt (No). It sends no other input.
 
-A complete module-side example is in `demos/battlefields/mod/GenFields`: its `AutoTest.cs` reads the autostart words,
-opens a Custom Battle on a named scene, moves the player through a list of viewpoints taking screenshots, lets the
-armies fight for a set time and quits. `demos/battlefields/test.ps1` runs it with only that module added to the game.
+A complete module-side example is the [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields) mod (`mod/GenFields`): its `AutoTest.cs` reads
+the autostart words, opens a Custom Battle on a named scene, moves the player through a list of viewpoints taking
+screenshots, lets the armies fight for a set time and quits. Its `tools/test.ps1` runs it with only that module added
+to the game.
 
 ## Crash dumps and reverse engineering
 `dump/` holds the minidump helpers (`threads.py`, `unwind.py`, `loc.py`, `rd.py`, `huge.py`, `vt.py`) and
@@ -353,8 +324,7 @@ instead.
 ## Files
 ```
 sdk/            the library and command-line tools (listed above)
-demos/          battlefields/ (the generator, the GenFields test module), bl2field/ (a field of custom assets only)
-docs/           ROADMAP.md, BATTLEFIELDS.md, images/
+docs/           ROADMAP.md, images/
 harness/        night_test.ps1, run_bannerlord_test.ps1, bannerlord_test_config.ps1, game_lock.ps1, dialogs.ps1,
                 player_checks.ps1, checks.example.json
 dump/           minidump helpers, RE.java, re.ps1, README.txt

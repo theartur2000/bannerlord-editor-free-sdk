@@ -6,7 +6,7 @@ Bannerlord used as a game engine in its own right. This repository grows into it
 Status: a plan, written 2026-10-10. Nothing here is built yet except where it says "have".
 
 The SDK comes first. Its first test is a separate, standalone tech-demo mod made only with it: battlefields generated from
-the spot on the world map where a battle starts ([BATTLEFIELDS.md](BATTLEFIELDS.md)). The demo is not part of the SDK. It
+the spot on the world map where a battle starts ([BATTLEFIELDS.md](https://github.com/theartur2000/bannerlord-procedural-battlefields/blob/main/docs/BATTLEFIELDS.md), in the mod's own repository). The demo is not part of the SDK. It
 decides which SDK pieces get built first, and it is finished when it needs nothing that the SDK does not provide.
 
 ## 1. What the official editor turned out to offer
@@ -130,11 +130,12 @@ Start with B1 to B2: they are small and already make procedural level work possi
 | B8 | read only: `sdk/worldmap.py` gives heights, biome types and settlements of the campaign map |
 
 The C# runtime library decided on in section 8 exists as the generator inside the GenFields module
-(`demos/battlefields/mod/GenFields/src/gen`): a new field for every campaign battle in under two seconds.
+(`mod/GenFields/src/gen` of [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)): a new field for every campaign battle in under two
+seconds.
 
 Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py` (rocks fitted to the ground),
 `sdk/assetpack.py` and `sdk/psk.py` (custom textures, materials and models in scenes), and the battlefield generator
-in `demos/`. See BATTLEFIELDS.md, sections 5a to 5c.
+(since 2026-10-12 in its own repository, linked above). See its BATTLEFIELDS.md, sections 5a to 5d.
 
 ### C. The loop (M, in parallel with everything)
 | Item | Done when |
