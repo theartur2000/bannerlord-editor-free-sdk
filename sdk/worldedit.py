@@ -1,4 +1,10 @@
-"""Editing the campaign world map's heights: research, not a working feature yet.
+"""Editing the campaign world map's heights.
+
+What works (verified in game 2026-10-14): write_height_textures, at the end of this file and behind `bl worldmap.bump`.
+The shipped map takes its heights from two textures, not from terrain.bin; a module overrides them by name and the map
+keeps its shipped look. Everything above that section is the record of how this was found, plus a scene-copy route
+(copy_map, set_heights, bump) that works only with terrain_render_version removed from the copy, which draws the map
+without its colours.
 
 Measured in game (2026-10-14): a module's SceneObj/Main_map/scene.xscene is the one the campaign reads (the log names it,
 and MapScene.GetMainMapModule picks the last active module that has one), and the copy's terrain.bin written here holds the
@@ -120,3 +126,86 @@ def bump(scene_dir, x, y, radius, height):
     res = set_heights(scene_dir, z + height * w)
     res.update(at=[x, y], height_before=round(before, 3), height_after=round(before + height, 3), samples_changed=int((w > 0).sum()))
     return res
+
+
+# ---- the working route: the map's height textures (found by native tracing, verified in game 2026-10-14)
+#
+# The shipped map's <terrain> has terrain_render_version="1". With it the engine takes the map's heights from two textures
+# looked up by name, not from terrain.bin: main_map_physics_heightmap (2048 x 2048, the PhysX heightfield behind
+# GetHeightAtPoint, so party positions and battles) and world_map_heightmap (4096 x 4096, what the map renderer draws).
+# Both are R16_UNORM, cover the whole map (nodes x node_size), store the far edge (largest y) in row 0, and a value v means
+# min_height + v / 65535 * (max_height - min_height) with the scene's own min and max. The War Sails module overrides both
+# by name from its own packages, and a module can do the same: no copy of the map scene, its tile set or terrain.bin is
+# needed, and the map keeps its shipped look (the tile set's colours stay where they are, on the new relief).
+# Map flora (trees) keeps its stored heights: ground raised under a forest buries it, ground lowered leaves it floating.
+
+HEIGHT_TEXTURES = (("main_map_physics_heightmap", "pack_9.tpac"), ("world_map_heightmap", "pack_19.tpac"))
+
+
+def shipped_texture(name, hint=None):
+    """A shipped R16 texture of Native's packages by name, as stored (uint16, row 0 first). hint: the package to try first."""
+    import glob, tpac, tpac_pack, config
+    folder = os.path.join(config.MODULES, "Native", "AssetPackages")
+    paths = sorted(glob.glob(os.path.join(folder, "*.tpac")))
+    if hint and os.path.join(folder, hint) in paths: paths.remove(os.path.join(folder, hint)); paths.insert(0, os.path.join(folder, hint))
+    for p in paths:
+        meta = tpac_pack.read_package(p, data=False)
+        for it in meta["items"]:
+            if (it["name"].decode() if isinstance(it["name"], bytes) else it["name"]) != name: continue
+            r, _ = tpac.parse_tex_record(it["record"], 0)
+            if r["format"] != "R16_UNORM": raise ValueError("%s is %s, not R16_UNORM" % (name, r["format"]))
+            for e in it["entries"]:
+                if e["rest"][16:32] != tpac.TEX_PIXELS: continue
+                with open(p, "rb") as f: f.seek(e["off"]); d = f.read(e["stored"])
+                if e["stored"] < e["raw"]: d = tpac.lz4_decompress(d, e["raw"])
+                return np.frombuffer(d[:r["w"] * r["h"] * 2], "<u2").reshape(r["h"], r["w"]).copy()
+    raise ValueError("no texture %s in %s" % (name, folder))
+
+
+def edits_field(edits, shape, cell):
+    """The height change (map units, the terrain grid's shape) of a list of edits; each edit is
+    {"op": "bump", "x", "y", "radius", "height"}: a smooth rise (or dip) with a cosine profile."""
+    dz = np.zeros(shape, np.float64)
+    for e in edits:
+        if e.get("op", "bump") != "bump": raise ValueError("unknown map edit %r" % e.get("op"))
+        r = float(e["radius"]); x, y = float(e["x"]), float(e["y"])
+        j0, j1 = max(0, int((y - r) / cell)), min(shape[0], int((y + r) / cell) + 2)
+        i0, i1 = max(0, int((x - r) / cell)), min(shape[1], int((x + r) / cell) + 2)
+        jj, ii = np.mgrid[j0:j1, i0:i1]
+        d = np.hypot(ii * cell - x, jj * cell - y)
+        dz[j0:j1, i0:i1] += np.where(d < r, 0.5 + 0.5 * np.cos(np.pi * np.minimum(d / r, 1.0)), 0.0) * float(e["height"])
+    return dz
+
+
+def write_height_textures(edits, out_dir, rdc_dir, png_dir=None, dry=False):
+    """Writes main_map_physics_heightmap and world_map_heightmap (the shipped ones plus the edits) as texture packages
+    into out_dir (and their caches into rdc_dir), ready for install. The scene's height range stays as shipped, so the
+    edited heights are clipped to it; the result says how many pixels were."""
+    import tpac, pngio
+    info, T, z = _read(source_dir())
+    lo, hi = info["min"], info["max"]; cell = info["node_size"] / 256.0
+    dz = edits_field(edits, z.shape, cell)
+    out = {"edits": len(edits), "range": [lo, hi], "textures": []}
+    for name, hint in HEIGHT_TEXTURES:
+        v = shipped_texture(name, hint).astype(np.float64); n = v.shape[0]
+        idx = np.minimum((np.arange(n) * (z.shape[0] - 1) / n).astype(int), z.shape[0] - 1)
+        nv = v + dz[np.ix_(idx, idx)][::-1] / (hi - lo) * 65535.0
+        clipped = int(((nv < 0) | (nv > 65535)).sum()); nv = np.clip(nv, 0, 65535)
+        row = {"name": name, "size": n, "pixels_changed": int((np.abs(nv - v) >= 0.5).sum()), "pixels_clipped": clipped}
+        if not dry:
+            os.makedirs(png_dir or out_dir, exist_ok=True)
+            png = os.path.join(png_dir or out_dir, name + ".png")          # an 8-bit look at it: the package keeps all 16 bits
+            pngio.write_png(png, (nv / 257.0).astype(np.uint8))
+            img = np.zeros((n, n, 4), np.float32); img[..., 0] = nv / 65535.0; img[..., 3] = 1.0
+            path, rdc, _ = tpac.write_texture(png, name=name, fmt="r16", usage="heightmap", mips=False, force=True,
+                                              out_dir=out_dir, rdc_dir=rdc_dir, image=img)
+            row.update(package=path, cache=rdc)
+        out["textures"].append(row)
+    return out
+
+
+def height_at(edits, x, y):
+    """The shipped height at x, y and the height after the edits (map units)."""
+    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    j, i = int(round(y / cell)), int(round(x / cell))
+    before = float(z[j, i]); return before, before + float(edits_field(edits, z.shape, cell)[j, i])

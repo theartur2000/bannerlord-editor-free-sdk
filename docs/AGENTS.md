@@ -102,6 +102,19 @@ bl scene register my_castle --kind siege          # or village, lords_hall
 bl run --words "type=Siege scene=my_castle tod=12 fight secs=60 quit" --launch
 ```
 
+The campaign map's ground is changed with bumps, kept in the project (`worldmap/edits.json`) and staged as the map's
+two height textures:
+
+```powershell
+bl live settlement --values id=town_S1                       # a position to start from (gate_position)
+bl worldmap.bump --x 374 --y 548 --radius 10 --height 10     # height < 0 for a dip; --list, --clear
+bl install                                                   # then a new campaign
+bl live mapheight --values x=374,y=548                       # the party's ground there
+```
+
+The map's heights stay within the shipped range (about -0.7 to 23); the command reports clipped pixels. Map trees keep
+their heights, so raised ground buries them.
+
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:
 

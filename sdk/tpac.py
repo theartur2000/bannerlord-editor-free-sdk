@@ -932,7 +932,8 @@ def write_texture(png, name=None, fmt=None, usage=None, mips=True, flags=(), for
     key = fmt or {"albedo": "bc3" if alpha else "bc1", "normalmap": "bc5", "heightmap": "bc4"}.get(usage, "bc1")
     efmt = TEX_FORMATS[key][0]
     sw, sh = im["size"]
-    rgba = im["rgba"] if image is None else np.asarray(image, np.uint8)
+    # a float image (0..1) keeps its precision: R16_UNORM height maps need all 16 bits
+    rgba = im["rgba"] if image is None else np.asarray(image) if np.issubdtype(np.asarray(image).dtype, np.floating) else np.asarray(image, np.uint8)
     if size and tuple(size) != (rgba.shape[1], rgba.shape[0]):
         rgba = pngio.resize(rgba, size[0], size[1])
     h, w = rgba.shape[:2]

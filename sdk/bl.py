@@ -692,6 +692,37 @@ def prefab_add(a):
             "note": "`bl deploy` copies it; the game reads it at startup"}
 
 
+@command("worldmap.bump", "Raises or lowers the campaign map's ground around a point: kept in the project (worldmap/edits.json) and staged as the map's two height textures for `bl install`.",
+         [P("x", "number", help="map position (see `bl live settlement` for a settlement's)"), P("y", "number"), P("radius", "number", help="in map units"),
+          P("height", "number", help="map units; negative for a dip"), P("clear", "bool", help="drop every edit (the textures are then removed from the stage)"),
+          P("list", "bool", help="only list the edits")], writes=True)
+def worldmap_bump(a):
+    import json, worldedit
+    d, pj = _need_project(); c = _cfg(); c.require_game()
+    folder = os.path.join(d, "worldmap"); store = os.path.join(folder, "edits.json")
+    edits = json.load(open(store)) if os.path.isfile(store) else []
+    if a.get("list"): return {"edits": edits}
+    stage = os.path.join(c.SDK_STAGE_DIR, "work")
+    if a.get("clear"):
+        gone = [os.path.join(stage, "Assets", n + "_tex.tpac") for n, _ in worldedit.HEIGHT_TEXTURES]
+        if a.get("dry"): return {"would_clear": len(edits), "would_unstage": gone}
+        for p_ in gone:
+            if os.path.isfile(p_): os.remove(p_)
+        if os.path.isfile(store): os.remove(store)
+        return {"cleared": len(edits), "unstaged": gone, "note": "textures already installed stay until `bl revert` or a new install over them"}
+    for k in ("x", "y", "radius", "height"):
+        if a.get(k) is None: raise BlError("--%s is needed" % k)
+    e = {"op": "bump", "x": a["x"], "y": a["y"], "radius": a["radius"], "height": a["height"]}
+    before, after = worldedit.height_at(edits + [e], a["x"], a["y"])
+    if a.get("dry"):
+        res = worldedit.write_height_textures(edits + [e], None, None, dry=True)
+        res.update(height_shipped=round(before, 3), height_after=round(after, 3)); return res
+    res = worldedit.write_height_textures(edits + [e], os.path.join(stage, "Assets"), os.path.join(stage, "RuntimeDataCache"), png_dir=folder)
+    os.makedirs(folder, exist_ok=True); json.dump(edits + [e], open(store, "w"), indent=1)
+    res.update(height_shipped=round(before, 3), height_after=round(after, 3), note="`bl install` puts the textures in the module; a new campaign or a loaded save shows the change")
+    return res
+
+
 @command("data.set", "Changes attributes of an object the game (or another module) defines: a settlement, an item, a troop, a kingdom ... as an XSLT patch in the project.",
          [P("kind", help="the data kind (the root element): Settlements, Items, NPCCharacters, Kingdoms, Clans, Cultures ...", required=True),
           P("element", help="the object's element: Settlement, Item, NPCCharacter, Kingdom ...", required=True), P("id", help="the object's id", required=True),
