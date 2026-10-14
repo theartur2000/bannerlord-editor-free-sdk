@@ -80,8 +80,8 @@ arguments. [docs/AGENTS.md](docs/AGENTS.md) is the guide written for agents.
 | Group | Commands |
 |---|---|
 | Machine | `doctor`, `commands`, `compat` |
-| Project | `new`, `build`, `deploy`, `run`, `workshop.config` |
-| Assets | `asset.texture`, `asset.material`, `asset.mesh`, `asset.skeleton`, `asset.anim`, `asset.clip`, `stage.list`, `stage.verify`, `install`, `revert`, `status` |
+| Project | `new`, `build`, `deploy`, `run`, `workshop.config`, `prefab.add` |
+| Assets | `asset.texture`, `asset.material`, `asset.mesh`, `asset.collision`, `asset.skeleton`, `asset.anim`, `asset.clip`, `stage.list`, `stage.verify`, `install`, `revert`, `status` |
 | UI | `ui.sprites` |
 | Scenes | `scene.list`, `scene.info`, `scene.entities`, `scene.ground`, `scene.add_entity`, `scene.remove_entities`, `scene.copy`, `scene.check`, `scene.preview`, `scene.heightmap`, `scene.from_heightmap`, `scene.register` |
 | Meshes | `mesh.find`, `mesh.info`, `mesh.preview`, `mesh.export`, `physics.info` |
@@ -123,7 +123,7 @@ Safety rules built into the command line:
 | Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. Verified in game (2026-10-13, seven sessions): a project made with `bl new` builds, deploys and loads; its test driver runs a Custom Battle unattended and the harness passes; every bridge command answers. |
 | Heightmap import | Verified offline (identical heights after export and import, files pass `scene.check`) and in game: a heightmap scene with ground cover loads and holds 200 against 200. |
 | Scene slots | Verified in game: a slot filled while the game ran was then loaded for a battle, and slots used in one session were emptied at the next start. |
-| Collision bodies | Capsule and sphere bodies made by the SDK verified in game: a ray cast hits the top of the body at the expected height (to the millimetre), with and without a visible mesh. Cooked hull and triangle-mesh bodies load without errors, but the in-game check could not confirm them: the engine's ray casts also miss the shipped triangle-mesh bodies of entities placed in a scene file. |
+| Collision bodies | Verified in game: bodies made by the SDK (capsule and sphere, a cooked convex hull, a cooked triangle mesh) on prefabs spawned while the game runs; a ray cast hits each at the expected height to the millimetre, the same as the game's own fence body rebuilt by the SDK. Bodies on entities placed in a scene file load without errors; ray casts do not see those, the game's own included, so that case is unconfirmed. |
 | Workshop upload file | Written to the format the game's uploader reads. Not verified by an upload. |
 | Other game versions | Untested. `bl compat` reports what still matches. |
 
@@ -347,7 +347,7 @@ Verified for game v1.4.8.119303:
 
 Not verified:
 
-- Cooked hull and triangle-mesh bodies colliding in game (see the status table). Their bytes match the game's own cooks.
+- Collision bodies on entities placed in a scene file (see the status table).
 - Encoder quality beyond one mode: BC7 is written in mode 6 and BC6H in mode 11 only.
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a

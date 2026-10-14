@@ -155,3 +155,22 @@ def register_scene(project, mod, scene_id, name=None, terrain="Plain", remove=Fa
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8-sig", newline=NL) as f: f.write(text)
     return re.findall(r'<Scene\s+id="([^"]+)"', text)
+
+
+def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=False):
+    """Adds a prefab to (or removes it from) the project's Prefabs/<id>_prefabs.xml, the form the shipped modules use:
+    a game_entity with an optional collision body and model. The game reads every Prefabs/*.xml of a module at startup.
+    Returns the prefab names in the file afterwards."""
+    p = os.path.join(project, "Prefabs", "%s_prefabs.xml" % mod.lower())
+    text = open(p, encoding="utf-8").read() if os.path.isfile(p) else "<prefabs>\n</prefabs>\n"
+    text = re.sub(r'[ \t]*<game_entity name="%s".*?</game_entity>\r?\n?' % re.escape(name), "", text, flags=re.S)
+    if not remove:
+        rows = ['\t<game_entity name="%s" old_prefab_name="">' % name]
+        if scale is not None: rows.append('\t\t<transform position="0.000, 0.000, 0.000" rotation_euler="0.000, 0.000, 0.000" scale="%.3f, %.3f, %.3f"/>' % tuple(scale))
+        if physics: rows.append('\t\t<physics shape="%s"/>' % physics)
+        if mesh: rows += ['\t\t<components>', '\t\t\t<meta_mesh_component name="%s"/>' % mesh, '\t\t</components>']
+        rows.append('\t</game_entity>')
+        i = text.rindex("</prefabs>"); text = text[:i] + "\n".join(rows) + "\n" + text[i:]
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8", newline=NL) as f: f.write(text)
+    return re.findall(r'<game_entity name="([^"]+)"', text)

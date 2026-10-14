@@ -302,7 +302,7 @@ def deploy(a):
     plan = [("SubModule.xml", os.path.join(dst, "SubModule.xml"))]
     dll = os.path.join(d, "build", mod + ".dll")
     if os.path.isfile(dll): plan += [(dll, os.path.join(dst, "bin", sub, mod + ".dll")) for sub in ("Win64_Shipping_Client", "Win64_Shipping_wEditor")]
-    for top in ("ModuleData",) + (("SceneObj",) if a.get("scenes", True) else ()):
+    for top in ("ModuleData", "Prefabs", "GUI") + (("SceneObj",) if a.get("scenes", True) else ()):
         for root, _, files in os.walk(os.path.join(d, top)):
             for fn in files:
                 src = os.path.join(root, fn); plan.append((src, os.path.join(dst, os.path.relpath(src, d))))
@@ -632,6 +632,18 @@ def scene_from_heightmap(a):
                                   a.get("play_radius"), a.get("water_level"), float(a.get("smooth") or 0.0), a.get("cover"), int(a.get("seed") or 1),
                                   log=lambda *x: LOG.append(" ".join(str(y) for y in x)))
     except ValueError as e: raise BlError(str(e))
+
+
+@command("prefab.add", "Defines a prefab in the project (Prefabs/<id>_prefabs.xml): a model, a collision body, or both. Scenes and `bl live spawn` can then place it.",
+         [P("name", help="the prefab's name", required=True), P("mesh", help="a model (metamesh) name"), P("physics", help="a collision shape name"),
+          P("scale", help="x y z"), P("remove", "bool")], writes=True)
+def prefab_add(a):
+    import scaffold
+    d, pj = _need_project()
+    if not a.get("remove") and not a.get("mesh") and not a.get("physics"): raise BlError("give --mesh, --physics or both")
+    if a.get("dry"): return {"would_edit": os.path.join(d, "Prefabs", pj["module"].lower() + "_prefabs.xml")}
+    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove"))),
+            "note": "`bl deploy` copies it; the game reads it at startup"}
 
 
 @command("scene.register", "Adds a scene to (or removes it from) the project's Custom Battle list, so it can be picked and test-run.",

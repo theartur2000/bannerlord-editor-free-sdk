@@ -128,6 +128,13 @@ def scaffold_makes_a_complete_project():
     assert scaffold.register_scene(d, "MyMod", "map_b") == ["map_a", "map_b"]
     assert scaffold.register_scene(d, "MyMod", "map_a") == ["map_b", "map_a"]                           # listed once, moved to the end
     assert scaffold.register_scene(d, "MyMod", "map_b", remove=True) == ["map_a"]
+    assert scaffold.add_prefab(d, "MyMod", "crate", mesh="crate_mesh", physics="crate_body") == ["crate"]
+    assert scaffold.add_prefab(d, "MyMod", "wall", physics="wall_body", scale=(2, 1, 1)) == ["crate", "wall"]
+    assert scaffold.add_prefab(d, "MyMod", "crate", mesh="crate_mesh_2") == ["wall", "crate"]
+    xml = open(os.path.join(d, "Prefabs", "mymod_prefabs.xml"), encoding="utf-8").read()
+    import xml.dom.minidom as minidom; minidom.parseString(xml)
+    assert '<physics shape="wall_body"/>' in xml and 'scale="2.000, 1.000, 1.000"' in xml and "crate_mesh_2" in xml and "crate_body" not in xml
+    assert scaffold.add_prefab(d, "MyMod", "wall", remove=True) == ["crate"]
 
 
 @test
