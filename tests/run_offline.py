@@ -370,6 +370,7 @@ def data_patches_are_valid_xslt():
     assert sub.count('path="patchmod_settlements"') == 1
     datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X3", {"name": "Third"})
     assert open(os.path.join(d, "SubModule.xml"), encoding="utf-8").read().count('path="patchmod_settlements"') == 1
+@test
 def morph_keys_in_a_made_up_mesh_and_a_pose_package():
     import morph, sdk_mesh, tpac
     n, v = 5, 6; rng = np.random.RandomState(1)
