@@ -56,7 +56,7 @@ Inside a project folder (one with `bl.json`), the module defaults to `<game>\Mod
 ```powershell
 bl asset texture rock_d.png
 bl asset material rock --diffuse rock_d --normal rock_n --static
-bl asset mesh rock.fbx --material rock
+bl asset mesh rock.fbx --material rock      # reports size_m; an FBX from Blender's default export needs --scale 0.01
 bl stage verify              # the faults the game turns into crashes
 bl install --dry             # what would be copied where
 bl install                   # backup, then copy
@@ -114,6 +114,7 @@ bl live screenshot --values path=C:\out\shot.bmp
 bl live spawn --values prefab=rock_cliff_b,x=600,y=640,yaw=45
 bl live remove --values id=all
 bl live raycast --values x=600,y=640      # what a vertical ray hits first, and at what height
+bl live sprite --values name=my_icon      # does the game know a UI sprite, and does its sheet load
 bl live quit                              # quits; under `bl run` the run then counts as passed
 ```
 

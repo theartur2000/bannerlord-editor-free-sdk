@@ -20,6 +20,7 @@
 //   screenshot path=                       write a screenshot (a .bmp) at the end of this frame
 //   spawn prefab= x= y= [z=] [yaw=]        place a prefab in the running scene; answers with its number
 //   remove id=<number>|all                 take spawned prefabs out again
+//   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
 //   quit                                   quit the game
 // Compiled with the project; not yet run in the game from this template.
@@ -183,6 +184,24 @@ namespace __MOD__
                         Spawned[i].Remove(0); Spawned[i] = null; n++;
                     }
                     r["removed"] = n;
+                    return r;
+                }
+                case "sprite":
+                {
+                    if (!a.ContainsKey("name")) throw new Exception("sprite needs name=");
+                    var sd = TaleWorlds.Engine.GauntletUI.UIResourceManager.SpriteData;
+                    if (sd == null) throw new Exception("the UI resources are not loaded yet");
+                    if (!sd.Sprites.ContainsKey(a["name"])) throw new Exception("no sprite named " + a["name"] + " (" + sd.Sprites.Count + " sprites known)");
+                    var sp = sd.Sprites[a["name"]];
+                    r["width"] = sp.Width; r["height"] = sp.Height;
+                    TaleWorlds.TwoDimension.SpriteCategory cat = null;
+                    foreach (var kv in sd.SpriteCategories) foreach (var part in kv.Value.SpriteParts) if (part.Name == a["name"]) cat = kv.Value;
+                    if (cat == null) return r;
+                    r["category"] = cat.Name; r["loaded_before"] = cat.IsLoaded;
+                    if (!cat.IsLoaded) cat.Load(TaleWorlds.Engine.GauntletUI.UIResourceManager.ResourceContext, TaleWorlds.Engine.GauntletUI.UIResourceManager.ResourceDepot);
+                    r["loaded"] = cat.IsLoaded; r["sheets"] = cat.SpriteSheetCount;
+                    int real = 0; foreach (var t in cat.SpriteSheets) if (t != null && t.Width > 0) real++;
+                    r["sheets_with_a_texture"] = real;
                     return r;
                 }
                 case "say":

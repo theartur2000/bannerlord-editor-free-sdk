@@ -118,7 +118,8 @@ Safety rules built into the command line:
 |---|---|
 | File formats | Verified by byte-identical round trips against the game's own files (see [Self-test](#self-test)). |
 | Scene tools | Verified in the unmodified game: generated battle maps, 200 vs 200 battles, custom textures and models. |
-| Asset commands | Pass the self-test. The scripts they were packaged from built a large mod that runs in game; the packaged commands themselves have not yet been run in game. |
+| Asset commands | Pass the self-test, and verified in game: a texture, a material and a static mesh made by `bl asset` from a PNG and a Blender FBX show at the right size, rotation and texture. Skeletons, animations and clips from this copy have not been run in game; the scripts they were packaged from built a large mod that does. |
+| UI sprites | Verified in game: sprite sheets made by `bl ui.sprites` load, and the game knows each sprite at its size. |
 | Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. Verified in game (2026-10-13, seven sessions): a project made with `bl new` builds, deploys and loads; its test driver runs a Custom Battle unattended and the harness passes; every bridge command answers. |
 | Heightmap import | Verified offline (identical heights after export and import, files pass `scene.check`) and in game: a heightmap scene with ground cover loads and holds 200 against 200. |
 | Scene slots | Verified in game: a slot filled while the game ran was then loaded for a battle, and slots used in one session were emptied at the next start. |
@@ -347,7 +348,6 @@ Verified for game v1.4.8.119303:
 Not verified:
 
 - Cooked hull and triangle-mesh bodies colliding in game (see the status table). Their bytes match the game's own cooks.
-- UI sprite sheets made with `bl ui.sprites` loading in game.
 - Encoder quality beyond one mode: BC7 is written in mode 6 and BC6H in mode 11 only.
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a
