@@ -263,7 +263,7 @@ python sdk/install.py status
 | Script | Description |
 |---|---|
 | `sdk/install.py` | stage writers, `verify`, `install`, `revert`, `status`, `inspect` |
-| `sdk/tpac.py` | the `.tpac` / `.rdc` reader and writer: textures (all twelve formats the game uses; encoders: BC7 mode 6, BC6H mode 11), materials, animations from FBX, clips, clip caches (every layout the game uses); `texture`, `tex`, `material`, `mtl`, `retex`, `anim`, `clip`, `clip-cache`, `optanim`, `owner`, `anims` |
+| `sdk/tpac.py` | the `.tpac` / `.rdc` reader and writer: textures (all twelve formats the game uses; BC7 and BC6H encoders try several modes per block, `--quality fast|normal|best`), materials, animations from FBX, clips, clip caches (every layout the game uses); `texture`, `tex`, `material`, `mtl`, `retex`, `anim`, `clip`, `clip-cache`, `optanim`, `owner`, `anims` |
 | `sdk/sdk_mesh.py` | FBX to metamesh packages and vertex-stream caches; `mesh`, `obj` |
 | `sdk/sdk_skeleton.py` | skeleton packages from FBX or glTF, Native skeleton readers |
 | `sdk/scene.py` | `scene.xscene` and other game XML read and written without changing a byte that was not edited; entities listed, added, moved, removed; `check`, `list` |
@@ -368,7 +368,6 @@ Verified for game v1.4.8.119303:
 Not verified:
 
 - Collision bodies on entities placed in a scene file (see the status table).
-- Encoder quality beyond one mode: BC7 is written in mode 6 and BC6H in mode 11 only.
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a
   game update.

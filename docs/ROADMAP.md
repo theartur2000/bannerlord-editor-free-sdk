@@ -103,7 +103,7 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 | Run the published SDK in game once, with a screenshot | S | README no longer says "not run in game" |
 
 **Where stream A stands (2026-10-13).** Texture formats: done, all twelve formats Native uses are read and written
-(BC7 encoder mode 6, BC6H encoder mode 11). Clip caches: done, 297 of 297 in the self-test sample and 5,892 of 5,893 in
+(BC7 encoder modes 0 to 7, BC6H encoder all 14 modes at quality best). Clip caches: done, 297 of 297 in the self-test sample and 5,892 of 5,893 in
 Native. Physics shapes: read and written byte for byte (17,451 of 17,451); new shapes of capsules and spheres can be
 written, and so can convex hulls and triangle meshes, cooked by the cooking library the game ships (`PhysXCooking_64.dll`,
 section 7) through ctypes: all 16,655 shipped hulls and 16,701 shipped meshes reproduce byte for byte from their
