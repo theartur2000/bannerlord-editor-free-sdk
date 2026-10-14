@@ -363,8 +363,26 @@ def asset_skeleton(a):
     return _stage_cmd(a, ["skeleton", a["file"]] + _opts(a, ("name", "type", "stage")) + (["--no-physics"] if a.get("no_physics") else []) + (["--force"] if a.get("force") else []))
 
 
-@command("asset.anim", "Stages a skeletal animation from a single-take FBX.", [P("fbx", required=True), STAGE, P("force", "bool")], writes=True)
-def asset_anim(a): return _stage_cmd(a, ["anim", a["fbx"]] + _opts(a, ("stage",)) + (["--force"] if a.get("force") else []))
+@command("asset.anim", "Stages a skeletal animation from a single-take FBX; with --skeleton it is attached to that skeleton (the owner the game checks).",
+         [P("fbx", required=True), P("skeleton", help="a skeleton name, staged or installed (default: the human skeleton)"), STAGE, P("force", "bool")], writes=True)
+def asset_anim(a):
+    res = _stage_cmd(a, ["anim", a["fbx"]] + _opts(a, ("stage",)) + (["--force"] if a.get("force") else []))
+    if a.get("dry"): return res
+    take = next((m.group(1) for line in LOG for m in [re.search(r"\(animation (.+?), \d+ keys\)", line)] if m), None)
+    res["animation"] = take
+    if a.get("skeleton"):
+        import tpac, tpac_pack, sdk_skeleton
+        c = _cfg(); name = a["skeleton"]
+        cands = [os.path.join(c.SDK_STAGE_DIR, a.get("stage") or "work", "Assets", name + "_geo.tpac"), os.path.join(c.ASSETS, name + "_geo.tpac")]
+        guid = None
+        for p_ in cands:
+            if os.path.isfile(p_):
+                for it in tpac_pack.read_package(p_, data=False)["items"]:
+                    if bytes(it["type"]) == sdk_skeleton.SKEL_TYPE and it["name"].decode("utf-8", "replace") == name: guid = bytes(it["guid"])
+            if guid: break
+        if guid is None: raise BlError("no skeleton named %s in the stage or the module" % name, "stage it first with `bl asset skeleton`")
+        res["owner_set"] = tpac.set_owner(res["staged"][0], guid); res["skeleton"] = name
+    return res
 
 
 @command("asset.clip", "Stages an animation clip on a staged animation, and its runtime cache.",
@@ -636,13 +654,13 @@ def scene_from_heightmap(a):
 
 @command("prefab.add", "Defines a prefab in the project (Prefabs/<id>_prefabs.xml): a model, a collision body, or both. Scenes and `bl live spawn` can then place it.",
          [P("name", help="the prefab's name", required=True), P("mesh", help="a model (metamesh) name"), P("physics", help="a collision shape name"),
-          P("scale", help="x y z"), P("remove", "bool")], writes=True)
+          P("scale", help="x y z"), P("skeleton", help="a skeleton name: the model is then skinned to it and the prefab can play clips"), P("remove", "bool")], writes=True)
 def prefab_add(a):
     import scaffold
     d, pj = _need_project()
     if not a.get("remove") and not a.get("mesh") and not a.get("physics"): raise BlError("give --mesh, --physics or both")
     if a.get("dry"): return {"would_edit": os.path.join(d, "Prefabs", pj["module"].lower() + "_prefabs.xml")}
-    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove"))),
+    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove")), a.get("skeleton")),
             "note": "`bl deploy` copies it; the game reads it at startup"}
 
 
@@ -809,7 +827,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, sprite, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

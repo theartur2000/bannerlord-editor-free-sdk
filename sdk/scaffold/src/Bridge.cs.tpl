@@ -20,6 +20,10 @@
 //   screenshot path=                       write a screenshot (a .bmp) at the end of this frame
 //   spawn prefab= x= y= [z=] [yaw=]        place a prefab in the running scene; answers with its number
 //   remove id=<number>|all                 take spawned prefabs out again
+//   animate id= clip= [speed=]             play an animation clip on a spawned prefab that has a skeleton; answers with the
+//                                          bone count and where the last bone is (moves while the clip plays)
+//   bone id= [index=]                      a bone of a spawned prefab's skeleton now (position, up axis, relative to the
+//                                          prefab), and the models on the skeleton and the entity with its bounding box
 //   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
 //   quit                                   quit the game
@@ -184,6 +188,32 @@ namespace __MOD__
                         Spawned[i].Remove(0); Spawned[i] = null; n++;
                     }
                     r["removed"] = n;
+                    return r;
+                }
+                case "animate":
+                case "bone":
+                {
+                    if (!a.ContainsKey("id")) throw new Exception(cmd + " needs id=");
+                    int id = (int)Num(a, "id");
+                    if (id < 0 || id >= Spawned.Count || Spawned[id] == null) throw new Exception("no spawned prefab " + id);
+                    Skeleton sk = Spawned[id].Skeleton;
+                    if (sk == null) throw new Exception("spawned prefab " + id + " has no skeleton");
+                    if (cmd == "animate")
+                    {
+                        if (!a.ContainsKey("clip")) throw new Exception("animate needs clip=");
+                        sk.SetAnimationAtChannel(a["clip"], 0, a.ContainsKey("speed") ? Num(a, "speed") : 1f, 0f, 0f);
+                    }
+                    sk.ForceUpdateBoneFrames();
+                    sbyte n = sk.GetBoneCount(); r["bones"] = (int)n;
+                    sbyte bi = a.ContainsKey("index") ? (sbyte)Num(a, "index") : (sbyte)(n - 1);
+                    MatrixFrame bf = sk.GetBoneEntitialFrame(bi); Vec3 o = bf.origin; Vec3 up = bf.rotation.u;
+                    r["bone"] = sk.GetBoneName(bi); r["bone_position"] = new[] { o.x, o.y, o.z };
+                    r["bone_up"] = new[] { up.x, up.y, up.z };                       // tilts when the clip bends the bone
+                    r["skeleton"] = sk.GetName();
+                    r["skeleton_models"] = sk.GetComponentCount(GameEntity.ComponentType.MetaMesh);
+                    r["entity_models"] = Spawned[id].GetComponentCount(GameEntity.ComponentType.MetaMesh);
+                    Vec3 lo = Spawned[id].GetBoundingBoxMin(), hi = Spawned[id].GetBoundingBoxMax();
+                    r["box_min"] = new[] { lo.x, lo.y, lo.z }; r["box_max"] = new[] { hi.x, hi.y, hi.z };
                     return r;
                 }
                 case "sprite":

@@ -133,7 +133,7 @@ Safety rules built into the command line:
 |---|---|
 | File formats | Verified by byte-identical round trips against the game's own files (see [Self-test](#self-test)). |
 | Scene tools | Verified in the unmodified game: generated battle maps, 200 vs 200 battles, custom textures and models. |
-| Asset commands | Pass the self-test, and verified in game: a texture, a material and a static mesh made by `bl asset` from a PNG and a Blender FBX show at the right size, rotation and texture. Skeletons, animations and clips from this copy have not been run in game; the scripts they were packaged from built a large mod that does. |
+| Asset commands | Pass the self-test, and verified in game: a texture, a material and a static mesh made by `bl asset` from a PNG and a Blender FBX show at the right size, rotation and texture. Skeletons, animations and clips are verified in game too: a two-bone skeleton from a Blender FBX loads on a prefab and a clip made by `bl asset clip` bends its bone as authored. A skinned model on such a prefab's skeleton is not drawn yet (the same model as a plain model is). |
 | UI sprites | Verified in game: sprite sheets made by `bl ui.sprites` load, and the game knows each sprite at its size. |
 | Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. Verified in game (2026-10-13, seven sessions): a project made with `bl new` builds, deploys and loads; its test driver runs a Custom Battle unattended and the harness passes; every bridge command answers. |
 | Heightmap import | Verified offline (identical heights after export and import, files pass `scene.check`) and in game: a heightmap scene with ground cover loads and holds 200 against 200. |

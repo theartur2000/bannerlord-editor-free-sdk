@@ -117,6 +117,8 @@ bl live spawn --values prefab=rock_cliff_b,x=600,y=640,yaw=45
 bl live remove --values id=all
 bl live raycast --values x=600,y=640      # what a vertical ray hits first, and at what height
 bl live sprite --values name=my_icon      # does the game know a UI sprite, and does its sheet load
+bl live animate --values id=0,clip=my_clip   # play a clip on a spawned prefab with a skeleton
+bl live bone --values id=0               # where its last bone is and which way it points now
 bl live quit                              # quits; under `bl run` the run then counts as passed
 ```
 
