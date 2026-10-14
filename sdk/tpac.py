@@ -15,11 +15,12 @@
 #   python tpac.py mtl <file_mtl.tpac>                        print a material file's fields
 #   python tpac.py retex <material> --diffuse <tex> [--normal <tex>] [--specular <tex>] (--out DIR | --force)
 #                                                             an installed material with only its texture slots changed
-#   python tpac.py texture <png> [--name N] [--format bc1|bc3|bc4|bc5|bc7|rgba8] [--usage albedo|normalmap|specularmap|
+#   python tpac.py texture <png> [--name N] [--format bc1|bc2|bc3|bc4|bc5|bc6h|bc7|r8|r16|rg16f|rgba16f|rgba8] [--usage albedo|normalmap|specularmap|
 #                   heightmap | --srgb | --linear] [--no-mips] [--flags a,b] [--out DIR] [--rdc DIR] [--inline] [--force]
 #                                                             write <name>_tex.tpac + RuntimeDataCache/<package>.rdc
 #                                                             (texture layout below); defaults by suffix: _d albedo bc1
-#                                                             (bc3 if the PNG has alpha), _n bc5, _s bc1, _h bc4
+#                                                             (bc3 if the PNG has alpha), _n bc5, _s bc1, _h bc4; the float formats
+#                                                             (bc6h, rg16f, rgba16f) default to usage hdr and read the PNG as linear 0..1
 #   python tpac.py anim <fbx> [...] [--out DIR] [--force]      FBX single take -> <fbx name>_geo.tpac (no editor import)
 #   python tpac.py clip-cache <clip glob> [--clips DIR] [--rdc DIR] [--dry]
 #                                                             build clips' RuntimeDataCache .rdc (no editor load needed)
@@ -57,7 +58,8 @@
 # source format string B8G8R8 / B8G8R8A8_UNORM / R8_UNORM, u64 source file size). The pixels ("Texture pixel data"
 # 2c4eee70...) are not in the module package but in RuntimeDataCache/<package guid as text>.rdc (Native editor
 # packages carry them inline instead). Mips largest first, each max(1,w/4)*max(1,h/4) blocks (8 bytes DXT1/BC4,
-# 16 DXT5/BC5/BC7) or w*h*4 bytes RGBA (byte order R, G, B, A), no padding. Decoded editor textures match their PNGs
+# 16 DXT3/DXT5/BC5/BC6H/BC7) or w*h*bytes per pixel uncompressed (RGBA8 4 in the order R, G, B, A; R8 1; R16 2; R16G16F 4; R16G16B16A16F 8,
+# little endian half floats), no padding. A cubemap (faces 6) stores each face with its full mip chain, face after face. Decoded editor textures match their PNGs
 # (PSNR DXT1 median 46 dB, DXT5 53, BC4 54, BC5 44, RGBA8 exact).
 # RDC file (engine rules, written by tw_formats.pack_rdc_exact): "RDC0", u32 0, u32 entry count, u64 145 * count, then
 # 145-byte entries sorted by (owner, id, type) bytes: owner resource guid, data id (texture: the resource again; mesh:
@@ -459,7 +461,13 @@ MODULE = os.path.dirname(os.path.dirname(ASSETS))
 GAME = os.path.dirname(os.path.dirname(MODULE))
 RDC_DIR = os.path.join(MODULE, "RuntimeDataCache")
 TEX_FORMATS = {"bc1": ("DXT1", 8), "bc3": ("DXT5", 16), "bc4": ("BC4", 8), "bc5": ("BC5", 16), "bc7": ("BC7", 16),
-               "rgba8": ("R8G8B8A8_UNORM", 0)}
+               "rgba8": ("R8G8B8A8_UNORM", 0), "bc2": ("DXT3", 16), "bc6h": ("BC6H_UF16", 16), "r8": ("R8_UNORM", 0),
+               "r16": ("R16_UNORM", 0), "rg16f": ("R16G16F", 0), "rgba16f": ("R16G16B16A16F", 0)}
+PSNR_CHANNELS = {"BC4": [0], "R8_UNORM": [0], "R16_UNORM": [0], "BC5": [0, 1], "R16G16F": [0, 1], "DXT1": [0, 1, 2], "BC6H_UF16": [0, 1, 2]}   # channels a format stores
+PIXEL_BYTES = {"R8G8B8A8_UNORM": 4, "R8_UNORM": 1, "R16_UNORM": 2, "R16G16F": 4, "R16G16B16A16F": 8}   # uncompressed formats
+FLOAT_FORMATS = ("BC6H_UF16", "R16G16F", "R16G16B16A16F")   # values are half floats: decode_float keeps them, decode_blocks clamps to 0..1
+UNCOMPRESSED = ("rgba8", "r8", "r16", "rg16f", "rgba16f")   # import settings "do not compress" byte
+ALPHA_FORMATS = ("bc2", "bc3", "bc7", "rgba8", "rgba16f")   # formats that get the has_alpha texture flag when the PNG has alpha
 USAGE_BY_SUFFIX = {"d": "albedo", "n": "normalmap", "s": "specularmap", "h": "heightmap"}
 
 def _S(s):
@@ -524,13 +532,17 @@ def lz4_decompress(src, raw_size):
     return bytes(dst[:o])
 
 def parse_tex_record(b, R):
-    """Texture record fields at R (its length field), in a module or a Native editor package. Returns (fields, end)."""
+    """Texture record fields at R (its length field), in a module or a Native editor package. Returns (fields, end).
+    Some Native records differ from the editor's in three places, all kept as they are (keys head, pre, tail): a guid and a u32 after
+    the version (zeros in the editor's), 5 bytes before the import flags (a flag byte and a u32, zeros in the editor's), and after the
+    group name a flag byte, a count and that many (type guid, resource guid) pairs (the editor's: five zeros)."""
     r = {}
     L = struct.unpack_from("<I", b, R)[0]; E = R + 8 + L
-    if b[R + 4:R + 32] != bytes(4) + struct.pack("<I", 3) + bytes(20): raise ValueError("texture record head differs")
+    if b[R + 4:R + 12] != bytes(4) + struct.pack("<I", 3): raise ValueError("texture record head differs")
+    r["head"] = bytes(b[R + 12:R + 32])
     path, q = _str(b, R + 32); r["path"] = path.decode()
     r["source_hash"] = b[q:q + 8]; q += 8
-    if b[q:q + 5] != bytes(5): raise ValueError("texture field at +%d" % (q - R))
+    r["pre"] = bytes(b[q:q + 5])
     r["import_flags"], q = _list(b, q + 5)
     if b[q:q + 5] != bytes.fromhex("0200000002"): raise ValueError("texture field at +%d" % (q - R))
     r["w"], r["h"], r["depth"], r["mips"], r["faces"] = struct.unpack_from("<IIIBH", b, q + 5); q += 20
@@ -538,8 +550,10 @@ def parse_tex_record(b, R):
     if b[q:q + 4] != bytes(4): raise ValueError("texture field at +%d" % (q - R))
     r["flags"], q = _list(b, q + 4)
     s, q = _str(b, q); r["group"] = s.decode()
-    if b[q:q + 5] != bytes(5): raise ValueError("texture field at +%d" % (q - R))
-    r["unk8"] = b[q + 5:q + 13]; r["vec"] = struct.unpack_from("<8f", b, q + 13); q += 45
+    n = struct.unpack_from("<I", b, q + 1)[0]
+    if n > 64: raise ValueError("texture field at +%d" % (q - R))
+    r["tail"] = bytes(b[q:q + 5 + 32 * n]); q += 5 + 32 * n
+    r["unk8"] = b[q:q + 8]; r["vec"] = struct.unpack_from("<8f", b, q + 8); r["vec_raw"] = bytes(b[q + 8:q + 40]); q += 40   # raw: a few hold signalling NaNs
     if q != E: raise ValueError("texture layout differs (%d != %d)" % (q - R, E - R))
     return r, E
 
@@ -561,12 +575,17 @@ def parse_tex(b):
     if b[q:q + 4] != bytes(4) or q + 4 != 0x24 + struct.unpack_from("<I", b, 0x1c)[0]: raise ValueError("texture trailer")
     return r
 
+def _vec_bytes(r):
+    v = r.get("vec", (0, 0, 0, 1, 0, 0, 0, 1)); raw = r.get("vec_raw")
+    if raw is not None and all(x == y or (x != x and y != y) for x, y in zip(struct.unpack("<8f", raw), v)): return raw   # unchanged: keep NaN payloads
+    return struct.pack("<8f", *v)
+
 def pack_tex_record(r):
-    rec = bytearray(4) + bytes(4) + struct.pack("<I", 3) + bytes(20) + _S(r["path"]) + r["source_hash"] + bytes(5) \
+    rec = bytearray(4) + bytes(4) + struct.pack("<I", 3) + r.get("head", bytes(20)) + _S(r["path"]) + r["source_hash"] + r.get("pre", bytes(5)) \
         + _L(r["import_flags"]) + bytes.fromhex("0200000002") \
         + struct.pack("<IIIBH", r["w"], r["h"], r.get("depth", 1), r["mips"], r.get("faces", 1)) + _S(r["format"]) \
-        + bytes(4) + _L(r["flags"]) + _S(r.get("group", "none")) + bytes(5) + r["unk8"] \
-        + struct.pack("<8f", *r.get("vec", (0, 0, 0, 1, 0, 0, 0, 1)))
+        + bytes(4) + _L(r["flags"]) + _S(r.get("group", "none")) + r.get("tail", bytes(5)) + r["unk8"] \
+        + _vec_bytes(r)
     struct.pack_into("<I", rec, 0, len(rec) - 8)
     return bytes(rec)
 
@@ -617,7 +636,11 @@ def pack_rdc(entries, comp=0, flag=0):
 
 def mip_bytes(w, h, fmt):
     bs = dict(TEX_FORMATS.values()).get(fmt, 0)
-    return w * h * 4 if not bs else max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * bs
+    return w * h * PIXEL_BYTES.get(fmt, 4) if not bs else max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * bs
+
+def tex_bytes(r):
+    """Size of a texture's pixel data from its record: every face (cubemap: 6) holds the whole mip chain."""
+    return r.get("faces", 1) * sum(mip_bytes(max(1, r["w"] >> k), max(1, r["h"] >> k), r["format"]) for k in range(r["mips"]))
 
 def tex_pixels(path, rdc_dir=None):
     """(fields, pixel bytes): the inline "Texture pixel data" entry if there is one, else the package's .rdc."""
@@ -637,7 +660,7 @@ def tex_pixels(path, rdc_dir=None):
                     return r, e["blob"] if e["stored"] == e["raw"] else lz4_decompress(e["blob"], e["raw"])
     raise FileNotFoundError("no pixel data for %s (no inline entry, no %s)" % (path, rdc_path(r["package"])))
 
-BLOCK = {"DXT1": 8, "BC1": 8, "DXT5": 16, "BC3": 16, "BC5": 16, "ATI2": 16, "BC4": 8, "ATI1": 8, "BC7": 16}
+BLOCK = {"DXT1": 8, "BC1": 8, "DXT3": 16, "BC2": 16, "DXT5": 16, "BC3": 16, "BC5": 16, "ATI2": 16, "BC4": 8, "ATI1": 8, "BC7": 16, "BC6H_UF16": 16}
 
 def _bc1_colors(c0, c1, np):
     def rgb(c): return np.stack([(c >> 11 & 31) * 255 // 31, (c >> 5 & 63) * 255 // 63, (c & 31) * 255 // 31], -1)
@@ -660,15 +683,22 @@ def _alpha8(blk, np):
     return np.take_along_axis(pal, idx, 1)   # (n, 16)
 
 def decode_blocks(data, w, h, fmt):
-    """RGBA uint8 (h, w, 4) of one mip stored in an engine format: DXT1/BC1, DXT5/BC3, BC4, BC5, R8G8B8A8_UNORM.
-    BC7 (eight block modes with partition tables) is not decoded here; it still round-trips byte for byte."""
+    """RGBA uint8 (h, w, 4) of one mip stored in an engine format: DXT1/BC1, DXT3/BC2, DXT5/BC3, BC4, BC5, BC6H_UF16, BC7, R8G8B8A8_UNORM,
+    R8_UNORM, R16_UNORM, R16G16F, R16G16B16A16F. Float formats are clamped to 0..1 (decode_float keeps the values); one and two channel
+    formats put R (and G) in the colour channels like BC4 and BC5 do, alpha 255."""
     import numpy as np
     if fmt == "R8G8B8A8_UNORM": return np.frombuffer(data[:w * h * 4], np.uint8).reshape(h, w, 4)
-    if fmt == "BC7": raise NotImplementedError("BC7 decode is not implemented")
+    if fmt in FLOAT_FORMATS or fmt in ("R8_UNORM", "R16_UNORM"):
+        f = decode_float(data, w, h, fmt); out = np.rint(np.clip(f, 0, 1) * 255).astype(np.uint8)
+        if fmt in ("R8_UNORM", "R16_UNORM"): out[..., 1:3] = out[..., :1]   # grey, like BC4
+        return out
     bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4); n = bw * bh; bs = BLOCK[fmt]
     blk = np.frombuffer(data[:n * bs], np.uint8).reshape(n, bs)
     out = np.zeros((n, 16, 4), np.uint8); out[..., 3] = 255
-    if fmt in ("DXT1", "BC1", "DXT5", "BC3"):
+    if fmt == "BC7":
+        import texcodec
+        out = texcodec.decode_bc7(blk)
+    elif fmt in ("DXT1", "BC1", "DXT5", "BC3"):
         cb = blk[:, -8:]
         c0 = cb[:, 0].astype(np.uint16) | cb[:, 1].astype(np.uint16) << 8
         c1 = cb[:, 2].astype(np.uint16) | cb[:, 3].astype(np.uint16) << 8
@@ -677,6 +707,16 @@ def decode_blocks(data, w, h, fmt):
         idx = np.stack([(bits >> (2 * t)) & 3 for t in range(16)], 1).astype(np.int64)
         out[..., :3] = np.take_along_axis(pal, idx[..., None].repeat(3, 2), 1)
         if bs == 16: out[..., 3] = _alpha8(blk[:, :8], np)
+    elif fmt in ("DXT3", "BC2"):   # 4 bit alpha, then a colour block that is always read in four colour mode
+        import texcodec
+        cb = blk[:, 8:]
+        c0 = cb[:, 0].astype(np.uint16) | cb[:, 1].astype(np.uint16) << 8
+        c1 = cb[:, 2].astype(np.uint16) | cb[:, 3].astype(np.uint16) << 8
+        pal = _bc1_four(c0, c1, np)
+        bits = cb[:, 4].astype(np.uint32) | cb[:, 5].astype(np.uint32) << 8 | cb[:, 6].astype(np.uint32) << 16 | cb[:, 7].astype(np.uint32) << 24
+        idx = np.stack([(bits >> (2 * t)) & 3 for t in range(16)], 1).astype(np.int64)
+        out[..., :3] = np.take_along_axis(pal, idx[..., None].repeat(3, 2), 1)
+        out[..., 3] = texcodec.dxt3_alpha_decode(blk)
     elif fmt in ("BC4", "ATI1"):
         v = _alpha8(blk, np); out[..., 0] = out[..., 1] = out[..., 2] = v
     elif fmt in ("BC5", "ATI2"):
@@ -686,12 +726,46 @@ def decode_blocks(data, w, h, fmt):
     img = out.reshape(bh, bw, 4, 4, 4).transpose(0, 2, 1, 3, 4).reshape(bh * 4, bw * 4, 4)
     return img[:h, :w]
 
-def decode_mip(r, pix, k=0):
-    """RGBA uint8 array of mip k."""
-    fmt = r["format"]; o = 0
+def _bc1_four(c0, c1, np):
+    """BC1 colour palette in the four colour interpolation mode whatever the order of the endpoints (DXT3 and DXT5 blocks per D3D)."""
+    def rgb(c): return np.stack([(c >> 11 & 31) * 255 // 31, (c >> 5 & 63) * 255 // 63, (c & 31) * 255 // 31], -1)
+    a, b = rgb(c0.astype(np.int32)), rgb(c1.astype(np.int32))
+    return np.stack([a, b, (2 * a + b) // 3, (a + 2 * b) // 3], 1)
+
+def decode_float(data, w, h, fmt):
+    """float32 (h, w, 4) RGBA of one mip, the stored values: half floats and BC6H as they are (A = 1 where there is none), R16_UNORM and
+    the 8 bit formats scaled to 0..1."""
+    import numpy as np
+    if fmt in ("R8G8B8A8_UNORM", "R8_UNORM", "R16_UNORM", "DXT1", "BC1", "DXT3", "BC2", "DXT5", "BC3", "BC4", "ATI1", "BC5", "ATI2", "BC7"):
+        if fmt == "R8_UNORM": v = np.frombuffer(data[:w * h], np.uint8).reshape(h, w, 1) / 255.0
+        elif fmt == "R16_UNORM": v = np.frombuffer(data[:w * h * 2], "<u2").reshape(h, w, 1) / 65535.0
+        else: return decode_blocks(data, w, h, fmt).astype(np.float32) / 255
+        out = np.ones((h, w, 4), np.float32); out[..., :3] = v; return out
+    out = np.ones((h, w, 4), np.float32)
+    if fmt == "R16G16B16A16F": out[:] = np.frombuffer(data[:w * h * 8], "<f2").reshape(h, w, 4)
+    elif fmt == "R16G16F": out[..., :2] = np.frombuffer(data[:w * h * 4], "<f2").reshape(h, w, 2); out[..., 2] = 0
+    elif fmt == "BC6H_UF16":
+        import texcodec
+        bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
+        rgb = texcodec.decode_bc6h(np.frombuffer(data[:bw * bh * 16], np.uint8).reshape(-1, 16))
+        out[:] = 1; img = rgb.reshape(bh, bw, 4, 4, 3).transpose(0, 2, 1, 3, 4).reshape(bh * 4, bw * 4, 3)
+        out[..., :3] = img[:h, :w]
+    else: raise NotImplementedError(fmt)
+    return out
+
+def decode_mip(r, pix, k=0, face=0):
+    """RGBA uint8 array of mip k (of one face of a cubemap)."""
+    fmt = r["format"]; o = face * sum(mip_bytes(max(1, r["w"] >> j), max(1, r["h"] >> j), fmt) for j in range(r["mips"]))
     for j in range(k): o += mip_bytes(max(1, r["w"] >> j), max(1, r["h"] >> j), fmt)
     w, h = max(1, r["w"] >> k), max(1, r["h"] >> k)
     return decode_blocks(pix[o:o + mip_bytes(w, h, fmt)], w, h, fmt)
+
+def decode_mip_float(r, pix, k=0, face=0):
+    """decode_float of mip k (of one face)."""
+    fmt = r["format"]; o = face * sum(mip_bytes(max(1, r["w"] >> j), max(1, r["h"] >> j), fmt) for j in range(r["mips"]))
+    for j in range(k): o += mip_bytes(max(1, r["w"] >> j), max(1, r["h"] >> j), fmt)
+    w, h = max(1, r["w"] >> k), max(1, r["h"] >> k)
+    return decode_float(pix[o:o + mip_bytes(w, h, fmt)], w, h, fmt)
 
 def _blocks(img):
     """(h, w, c) uint8 -> (n, 16, c) float32 4x4 blocks in row order, edges padded by replication."""
@@ -799,14 +873,30 @@ def enc_bc7(x):
     return np.concatenate([lo.astype("<u8").view(np.uint8).reshape(n, 8), hi.astype("<u8").view(np.uint8).reshape(n, 8)], 1)
 
 def encode_mip(img, fmt):
-    """img (h, w, 4) uint8 RGBA -> bytes in the engine format (DXT1, DXT5, BC4, BC5, BC7, R8G8B8A8_UNORM)."""
+    """img (h, w, 4) -> bytes in the engine format (DXT1, DXT3, DXT5, BC4, BC5, BC6H_UF16, BC7, R8G8B8A8_UNORM, R8_UNORM, R16_UNORM, R16G16F,
+    R16G16B16A16F). img is uint8 RGBA (the float formats read it as 0..1) or float RGBA, where 1.0 is white and the float formats keep
+    values above 1; the 8 bit formats clamp a float image to 0..1. BC6H is written in mode 11 only."""
     import numpy as np
+    if np.issubdtype(np.asarray(img).dtype, np.floating):
+        if fmt == "R16_UNORM": return np.rint(np.clip(img[..., 0], 0, 1) * 65535).astype("<u2").tobytes()
+        if fmt not in FLOAT_FORMATS: img = np.rint(np.clip(img, 0, 1) * 255).astype(np.uint8)
+    elif fmt in FLOAT_FORMATS: img = np.asarray(img, np.float32) / 255
     if fmt == "R8G8B8A8_UNORM": return np.ascontiguousarray(img, np.uint8).tobytes()
+    if fmt == "R8_UNORM": return np.ascontiguousarray(img[..., 0], np.uint8).tobytes()
+    if fmt == "R16_UNORM": return (img[..., 0].astype(np.uint16) * 257).astype("<u2").tobytes()   # 257 * 255 = 65535
+    if fmt == "R16G16F": return np.ascontiguousarray(img[..., :2], np.float32).astype("<f2").tobytes()
+    if fmt == "R16G16B16A16F": return np.ascontiguousarray(img, np.float32).astype("<f2").tobytes()
     x = _blocks(img)
     if fmt == "DXT1": out = enc_bc1(x[:, :, :3])
+    elif fmt == "DXT3":
+        import texcodec
+        out = np.concatenate([texcodec.dxt3_alpha(x[:, :, 3]), enc_bc1(x[:, :, :3])], 1)
     elif fmt == "DXT5": out = np.concatenate([enc_bc4(x[:, :, 3]), enc_bc1(x[:, :, :3])], 1)
     elif fmt == "BC4": out = enc_bc4(x[:, :, 0])
     elif fmt == "BC5": out = np.concatenate([enc_bc4(x[:, :, 0]), enc_bc4(x[:, :, 1])], 1)
+    elif fmt == "BC6H_UF16":
+        import texcodec
+        out = texcodec.enc_bc6h(x[:, :, :3])
     elif fmt == "BC7": out = enc_bc7(x)
     else: raise ValueError(fmt)
     return out.tobytes()
@@ -827,7 +917,7 @@ def write_texture(png, name=None, fmt=None, usage=None, mips=True, flags=(), for
     src = open(png, "rb").read(); im = pngio.read_png(png)
     alpha = im["alpha"]
     srcfmt = "R8_UNORM" if im["mode"] == "L" else "B8G8R8A8_UNORM" if alpha else "B8G8R8"
-    usage = usage or USAGE_BY_SUFFIX.get(name.rsplit("_", 1)[-1], "albedo")
+    usage = usage or USAGE_BY_SUFFIX.get(name.rsplit("_", 1)[-1], "hdr" if fmt in ("bc6h", "rg16f", "rgba16f") else "heightmap" if fmt == "r16" else "albedo")
     key = fmt or {"albedo": "bc3" if alpha else "bc1", "normalmap": "bc5", "heightmap": "bc4"}.get(usage, "bc1")
     efmt = TEX_FORMATS[key][0]
     sw, sh = im["size"]
@@ -848,11 +938,11 @@ def write_texture(png, name=None, fmt=None, usage=None, mips=True, flags=(), for
     srcpath = "$BASE/" + os.path.relpath(ap, GAME).replace(chr(92), "/") if inside else config.source_base(os.path.basename(png))
     # import settings: usage string, then 104 bytes; the editor's "Do Not Compress" + "no mips" import wrote 01 01
     # (which byte is which is not pinned down: [0] = do not compress, [1] = no mips assumed)
-    settings = _S(usage) + bytes([key == "rgba8", not mips]) + bytes(102)
+    settings = _S(usage) + bytes([key in UNCOMPRESSED, not mips]) + bytes(102)
     srcinfo = struct.pack("<IIIII", sw, sh, 1, 1, 1) + _S(srcfmt) + struct.pack("<Q", len(src))
     r = {"path": srcpath, "source_hash": struct.pack("<Q", xxh64(src)), "import_flags": list(flags), "w": w, "h": h,
          "mips": n_mips, "format": efmt,
-         "flags": list(tex_flags) if tex_flags is not None else ["has_alpha"] if alpha and key in ("bc3", "bc7", "rgba8") else [],
+         "flags": list(tex_flags) if tex_flags is not None else ["has_alpha"] if alpha and key in ALPHA_FORMATS else [],
          "group": "none", "unk8": _pixel_hash(pix)}
     keep = out if os.path.exists(out) else os.path.join(ASSETS, name + "_tex.tpac")
     old = open(keep, "rb").read(0x44) if os.path.exists(keep) else None
@@ -1377,7 +1467,7 @@ def main(argv):
             try: out, take, nk = write_anim_package(f, out_dir, "--force" in a)
             except FileExistsError as e: print(e); continue
             print("wrote %-44s animation %s, %d keys" % (out, take, nk))
-    elif cmd == "texture":   # tpac.py texture <png> [--name N] [--format bc1|bc3|bc4|bc5|bc7|rgba8] [--usage U | --srgb |
+    elif cmd == "texture":   # tpac.py texture <png> [--name N] [--format bc1|bc2|bc3|bc4|bc5|bc6h|bc7|r8|r16|rg16f|rgba16f|rgba8] [--usage U | --srgb |
         # --linear] [--no-mips] [--flags a,b] [--out DIR] [--rdc DIR] [--inline] [--force]
         a = sys.argv[3:]; opt = lambda k: a[a.index(k) + 1] if k in a else None
         usage = opt("--usage") or ("albedo" if "--srgb" in a else None)
@@ -1416,7 +1506,7 @@ def main(argv):
                                                                else "DIFFERS", e["stored"], e2["stored"]))
             for j in range(min(r["mips"], r2["mips"])):
                 x, y = decode_mip(r, pix, j).astype(float), decode_mip(r2, pix2, j).astype(float)
-                ch = {"BC4": [0], "BC5": [0, 1], "DXT1": [0, 1, 2]}.get(r["format"], [0, 1, 2, 3])
+                ch = PSNR_CHANNELS.get(r["format"], [0, 1, 2, 3])
                 mse = ((x[..., ch] - y[..., ch]) ** 2).mean()
                 print("  mip %d %dx%d PSNR %.2f dB" % (j, x.shape[1], x.shape[0], 10 * np.log10(255 ** 2 / max(mse, 1e-10))))
                 if x.shape[0] < 64: break

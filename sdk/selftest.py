@@ -5,9 +5,13 @@
 #   packages   parse each sampled Native .tpac and write it again with the SDK's package writer; the rebuilt bytes must equal
 #              the file (sha1). The sample is spread over AssetPackages and EmAssetPackages. --full: every package up to
 #              --max-package-mb (all 150 AssetPackages rebuild byte-identical on game v1.4.8).
-#   textures   Native texture records with inline pixels: the record re-packs byte-identical, the pixel hash rule holds, the
-#              import settings round trip, and a decoded top mip re-encoded by the SDK's encoder decodes within a PSNR bound
-#              (DXT1, DXT5, BC4, BC5, RGBA8; BC7 has no decoder here, so only its record, hash and size are checked)
+#   textures   Native texture records with inline pixels, every format the SDK writes (DXT1, DXT3, DXT5, BC4, BC5, BC6H, BC7, RGBA8, R8,
+#              R16, R16G16F, R16G16B16A16F): the record re-packs byte-identical, the size rule holds (cubemap faces included), the pixel
+#              hash rule holds (up to 3 MB of pixels), the import settings round trip, and a decoded top mip re-encoded by the SDK's
+#              encoder decodes within a PSNR bound (the uncompressed formats must give back the stored bytes). Textures not tested
+#              (too big, no inline pixels, format not supported) are named with counts in the output.
+#   codecs     the BC7, BC6H and DXT3 decoders against pinned results on seeded random blocks, and every format the texture writer
+#              offers written from a synthetic picture, read back and checked (hashes, size rule, PSNR)
 #   caches     Native clip caches ("Optimized animation"), with and without a root channel, with and without raw key channels: parse and
 #              re-pack byte-identical, size trailer follows the engine rule; any class that still fails is named with its count
 #   skeletons  Native human / horse / camel skeleton definition and user data re-pack byte-identical
@@ -92,26 +96,46 @@ def _psnr(a, b, ch):
     return 99.0 if mse < 1e-9 else 10 * math.log10(255 ** 2 / mse)
 
 
+LOSSLESS = {"R8G8B8A8_UNORM", "R8_UNORM", "R16_UNORM", "R16G16F", "R16G16B16A16F"}   # the encoder must give back the stored bytes
+HASH_MAX = 3_000_000   # bytes of pixel data up to which the pixel hash rule is checked
+SAMPLE_MAX = 12_000_000   # bytes of pixel data: larger textures are named in the output, not tested
+
+
+def _psnr_f(a, b, ch):
+    """PSNR of float images clamped to 0..1 (what a display shows of an HDR texture)."""
+    x, y = np.clip(a, 0, 1)[..., ch].astype(np.float64), np.clip(b, 0, 1)[..., ch].astype(np.float64)
+    mse = ((x - y) ** 2).mean()
+    return 99.0 if mse < 1e-12 else 10 * math.log10(1 / mse)
+
+
+def _bc7_modes(blk):
+    b = np.frombuffer(blk, np.uint8).reshape(-1, 16)[:, 0].astype(np.int32); m = np.full(len(b), 8)
+    for k in range(7, -1, -1): m[(b & ((1 << (k + 1)) - 1)) == (1 << k)] = k
+    return m
+
+
 def section_textures(per_format):
-    t0 = time.time(); cands = collections.defaultdict(list); other = collections.Counter()
+    import texcodec
+    t0 = time.time(); cands = collections.defaultdict(list); skipped = collections.defaultdict(collections.Counter); total = collections.Counter()
     supported = {v[0] for v in tpac.TEX_FORMATS.values()}
     for p in sorted(glob.glob(os.path.join(config.NATIVE, "EmAssetPackages", "**", "*.tpac"), recursive=True)):
         try: items = tw_formats.read_package_index(p)
-        except Exception: continue
+        except Exception: skipped["package index not read"]["?"] += 1; continue
         for it in items:
             if it["type"] != tpac.TEX_TYPE: continue
-            px = [e for e in it["entries"] if e["type"] == tpac.TEX_PIXELS]
-            if not px or px[0]["raw"] > 1_500_000: continue
             try: r, _ = tpac.parse_tex_record(bytes(it["record"]), 0)
-            except Exception: continue
-            if r["format"] not in supported: other[r["format"]] += 1; continue
-            if len(cands[r["format"]]) < per_format * 6: cands[r["format"]].append((p, it, r, px[0]))
-    stats = collections.Counter(); psnr = collections.defaultdict(list); notes = []
+            except Exception: skipped["record layout not read"]["?"] += 1; continue
+            fmt = r["format"]; total[fmt] += 1; px = [e for e in it["entries"] if e["type"] == tpac.TEX_PIXELS]
+            if fmt not in supported: skipped["format not supported"][fmt] += 1
+            elif not px: skipped["no inline pixels"][fmt] += 1
+            elif px[0]["raw"] > SAMPLE_MAX: skipped["over %d MB" % (SAMPLE_MAX // 1_000_000)][fmt] += 1
+            else: cands[fmt].append((p, it, r, px[0]))
+    stats = collections.Counter(); psnr = collections.defaultdict(list); notes = []; modes = collections.defaultdict(collections.Counter)
     for fmt, lst in sorted(cands.items()):
         random.Random(7).shuffle(lst)
         for p, it, r, px in lst[:per_format]:
-            stats["textures"] += 1
-            rec = bytes(it["record"])
+            stats["textures"] += 1; stats["tex " + fmt] += 1
+            rec = bytes(it["record"]); w, h = r["w"], r["h"]
             with open(p, "rb") as f:
                 pix = _read_entry(f, px)
                 st = [e for e in it["entries"] if e["type"] == tpac.TEX_SETTINGS]
@@ -119,32 +143,136 @@ def section_textures(per_format):
             try:
                 if tpac.pack_tex_record(r) == rec: stats["record identical"] += 1
                 elif len(notes) < 3: notes.append("%s %s: record re-pack differs" % (it["name"], fmt))
-                if tw_formats.texture_pixel_hash(pix) == r["unk8"]: stats["pixel hash"] += 1
-                elif len(notes) < 3: notes.append("%s %s: pixel hash rule differs" % (it["name"], fmt))
-                if len(pix) == sum(tpac.mip_bytes(max(1, r["w"] >> k), max(1, r["h"] >> k), fmt) for k in range(r["mips"])): stats["size"] += 1
+                if len(pix) <= HASH_MAX:   # the hash is pure Python here: big textures are left out of this one check
+                    stats["pixel hash tested"] += 1
+                    if tw_formats.texture_pixel_hash(pix) == r["unk8"]: stats["pixel hash"] += 1
+                    elif len(notes) < 3: notes.append("%s %s: pixel hash rule differs" % (it["name"], fmt))
+                if len(pix) == tpac.tex_bytes(r): stats["size"] += 1
+                elif len(notes) < 3: notes.append("%s %s: size rule differs" % (it["name"], fmt))
                 if settings is not None:
                     stats["settings seen"] += 1
                     if tw_formats.pack_tex_import_settings(tw_formats.parse_tex_import_settings(settings)) == settings: stats["settings identical"] += 1
-                if fmt != "BC7":
+                top = pix[:tpac.mip_bytes(w, h, fmt)]
+                if fmt == "BC7": modes[fmt].update(int(m) for m in _bc7_modes(top))
+                if fmt == "BC6H_UF16": modes[fmt].update(int(m) for m in texcodec.bc6h_modes(np.frombuffer(top, np.uint8).reshape(-1, 16)))
+                ch = tpac.PSNR_CHANNELS.get(fmt, [0, 1, 2, 3])
+                if fmt in tpac.FLOAT_FORMATS or fmt == "R16_UNORM":   # keep the stored values, not the 8 bit view of them
+                    img = tpac.decode_mip_float(r, pix, 0)
+                    if not np.isfinite(img).all(): stats["non-finite values"] += 1
+                    if fmt in LOSSLESS: enc = tpac.encode_mip(img, fmt); ps = _psnr_f(img, tpac.decode_float(enc, w, h, fmt), ch)
+                    else:   # the encoders are slow on big pictures: the lossy ones are measured on a crop of at most 512 x 512
+                        c = img[:min(h, 512) // 4 * 4 or h, :min(w, 512) // 4 * 4 or w]; ch_, cw_ = c.shape[:2]
+                        ps = _psnr_f(c, tpac.decode_float(tpac.encode_mip(c, fmt), cw_, ch_, fmt), ch)
+                else:
                     img = tpac.decode_mip(r, pix, 0)
-                    again = tpac.decode_blocks(tpac.encode_mip(img, fmt), r["w"], r["h"], fmt)
-                    ch = {"BC4": [0], "BC5": [0, 1], "DXT1": [0, 1, 2]}.get(fmt, [0, 1, 2, 3])
-                    psnr[fmt].append(_psnr(img, again, ch)); stats["decoded"] += 1
+                    if fmt in LOSSLESS: enc = tpac.encode_mip(img, fmt); ps = _psnr(img, tpac.decode_blocks(enc, w, h, fmt), ch)
+                    else:
+                        c = img[:min(h, 512) // 4 * 4 or h, :min(w, 512) // 4 * 4 or w]; ch_, cw_ = c.shape[:2]
+                        ps = _psnr(c, tpac.decode_blocks(tpac.encode_mip(c, fmt), cw_, ch_, fmt), ch)
+                psnr[fmt].append(ps); stats["decoded"] += 1
+                if fmt in LOSSLESS:
+                    stats["lossless"] += 1
+                    if enc == top: stats["lossless exact"] += 1
+                    elif len(notes) < 3: notes.append("%s %s: re-encoded bytes differ from the stored ones" % (it["name"], fmt))
+                if r["faces"] > 1 and r["mips"] > 1 and w % 2 == 0 and h % 2 == 0:   # cubemap: each face holds its whole mip chain
+                    stats["cube"] += 1
+                    a0, a1 = tpac.decode_mip_float(r, pix, 0), tpac.decode_mip_float(r, pix, 1)
+                    down = a0.reshape(h // 2, 2, w // 2, 2, 4).mean((1, 3)); o = r["faces"] * tpac.mip_bytes(w, h, fmt)
+                    alt = tpac.decode_float(pix[o:o + tpac.mip_bytes(w // 2, h // 2, fmt)], w // 2, h // 2, fmt)   # mip 1 if the layout were mip-major
+                    stats["cube layout face-major"] += bool(np.abs(down - a1).mean() < np.abs(down - alt).mean())
             except Exception as ex:
                 notes.append("%s %s: %s" % (it["name"], fmt, ex))
     # the encoders are lossy: a decode of what they wrote must stay close to the decode of the original
-    bound = {"DXT1": 30, "DXT5": 28, "BC4": 38, "BC5": 34, "R8G8B8A8_UNORM": 90}
-    low = [(f, min(v)) for f, v in psnr.items() if min(v) < bound.get(f, 25)]
+    bound = {"DXT1": 30, "DXT3": 28, "DXT5": 28, "BC4": 38, "BC5": 34, "BC6H_UF16": 25, "BC7": 25, "R8G8B8A8_UNORM": 90, "R8_UNORM": 90, "R16_UNORM": 90,
+             "R16G16F": 90, "R16G16B16A16F": 90}
+    low = [(f, round(min(v), 1)) for f, v in psnr.items() if min(v) < bound.get(f, 25)]
     # the pixel hash is the engine's rule for textures the editor imported; a Native texture whose pixels were touched after
     # import keeps its old hash, so most (not all) must match
-    ok = (stats["textures"] > 0 and stats["record identical"] == stats["textures"] and stats["pixel hash"] >= 0.8 * stats["textures"]
-          and stats["size"] == stats["textures"] and stats["settings identical"] == stats["settings seen"] and not low)
-    per = ", ".join("%s min %.1f dB (%d)" % (f, min(v), len(v)) for f, v in sorted(psnr.items()))
-    report("textures", ok, "%d Native textures (%s): record re-pack identical %d, pixel hash rule %d, size rule %d, import settings %d/%d; re-encode PSNR: %s; formats the SDK does not write, not tested: %s (%.0f s)"
-           % (stats["textures"], ", ".join("%s %d" % (f, min(per_format, len(l))) for f, l in sorted(cands.items())), stats["record identical"],
-              stats["pixel hash"], stats["size"], stats["settings identical"], stats["settings seen"], per or "none decoded",
-              ", ".join(sorted(other)) or "none", time.time() - t0),
+    ok = (stats["textures"] > 0 and stats["record identical"] == stats["textures"] and stats["pixel hash"] >= 0.8 * stats["pixel hash tested"]
+          and stats["size"] == stats["textures"] and stats["settings identical"] == stats["settings seen"] and not low and stats["decoded"] == stats["textures"]
+          and stats["lossless exact"] == stats["lossless"] and stats["cube layout face-major"] == stats["cube"] and not stats["non-finite values"]
+          and not skipped.get("record layout not read") and not skipped.get("format not supported") and set(cands) == supported & set(total))
+    per = ", ".join("%s %s (%d)" % (f, "exact" if min(v) >= 99 else "min %.1f dB" % min(v), len(v)) for f, v in sorted(psnr.items()))
+    skip = "; ".join("%s: %s" % (why, ", ".join("%s %d" % kv for kv in sorted(c.items()))) for why, c in sorted(skipped.items())) or "none"
+    seen = "; ".join("%s modes seen %d of %d" % (f, len(m), 8 if f == "BC7" else 14) for f, m in sorted(modes.items()))
+    report("textures", ok, "%d Native textures (%s): record re-pack identical %d, pixel hash rule %d of %d, size rule %d, import settings %d/%d, cubemap layout %d/%d; re-encode PSNR: %s; %s; not tested (%d of %d textures): %s (%.0f s)"
+           % (stats["textures"], ", ".join("%s %d" % (f, stats["tex " + f]) for f in sorted(cands)), stats["record identical"], stats["pixel hash"], stats["pixel hash tested"], stats["size"],
+              stats["settings identical"], stats["settings seen"], stats["cube layout face-major"], stats["cube"], per or "none decoded", seen or "no mode counts",
+              sum(sum(c.values()) for c in skipped.values()), sum(total.values()), skip, time.time() - t0),
            notes + ["below bound: %s" % low] * bool(low))
+
+
+# --------------------------------------------------------------------------------------------------------------------- codecs
+def _stream(seed, n):
+    """n deterministic pseudo-random bytes (sha256 in counter mode, the same on every Python and numpy)."""
+    out = bytearray(); i = 0
+    while len(out) < n: out += hashlib.sha256(seed + b"%d" % i).digest(); i += 1
+    return bytes(out[:n])
+
+
+def _pin_blocks(kind, n):
+    """n random 16 byte blocks with the mode bits set so that every mode appears evenly (BC7: 8 modes, BC6H: 14)."""
+    import texcodec
+    b = np.frombuffer(_stream(kind, n * 16), np.uint8).reshape(n, 16).copy(); k = np.arange(n)
+    if kind == b"bc7":
+        for mode in range(8): b[k % 8 == mode, 0] = (b[k % 8 == mode, 0] & (0xFF << (mode + 1) & 0xFF)) | (1 << mode)
+    else:
+        for mode in range(14): b[k % 14 == mode, 0] = (b[k % 14 == mode, 0] & (0xFC if mode < 2 else 0xE0)) | texcodec.BC6H_MODE_VALUE[mode]
+    return b
+
+
+# SHA-256 of what the decoders give on the seeded blocks above. When these values were pinned, an independent decoder gave the same
+# BC7 value for every pixel of these 16384 blocks, the same DXT3 alpha and colours within one level on these 4096 blocks, and the
+# same BC6H value within one level on these 16800 blocks (the other decoder returns 8 bit pixels). A test fails if a later edit
+# changes any decoded value.
+PINS = {"bc7": "79818c0fab7c23ffa037568681b1a13452d5fe3e0c06103a2156432094921e90",
+        "bc6h": "c8263922e2b2cc45a34ac6b9f74f0cf3aa6b651c2947a36f32f3ee396e7fd6ae",
+        "dxt3": "6ff30251b0de3694b8bab98df491c47eeb66f3108049be5d781c52ad2a7aa01d"}
+
+
+def section_codecs():
+    import texcodec
+    t0 = time.time(); checks = []; notes = []
+    def check(name, ok, why=""):
+        checks.append((name, bool(ok)))
+        if not ok: notes.append("%s %s" % (name, why))
+    got = {"bc7": hashlib.sha256(texcodec.decode_bc7(_pin_blocks(b"bc7", 16384)).tobytes()).hexdigest(),
+           "bc6h": hashlib.sha256(texcodec.decode_bc6h(_pin_blocks(b"bc6h", 16800)).astype("<f4").tobytes()).hexdigest(),
+           "dxt3": hashlib.sha256(tpac.decode_blocks(_stream(b"dxt3", 4096 * 16), 4096 * 4, 4, "DXT3").tobytes()).hexdigest()}
+    for k, v in got.items(): check("%s decoder pin" % k, v == PINS[k], "%s != %s" % (v, PINS[k]))
+    # every format end to end through the texture writer: a synthetic picture, written, read back, hashes, size rule and PSNR
+    root = os.path.join(config.SDK_STAGE_DIR, "_selftest", "codecs")
+    if os.path.isdir(root): shutil.rmtree(root)
+    A, R = os.path.join(root, "Assets"), os.path.join(root, "RuntimeDataCache"); os.makedirs(A); os.makedirs(R)
+    h, w = 70, 130; y, x = np.mgrid[0:h, 0:w]; rng = np.random.RandomState(5)
+    img = np.zeros((h, w, 4), np.uint8)
+    img[..., 0] = x * 255 // w; img[..., 1] = y * 255 // h; img[..., 2] = (x + y) * 3 % 256; img[..., 3] = np.where((x // 16 + y // 16) % 2 == 0, 255, 100)
+    img[..., :3] = np.clip(img[..., :3].astype(int) + rng.randint(-6, 7, (h, w, 3)), 0, 255)
+    png = os.path.join(root, "codec_d.png"); pngio.write_png(png, img)
+    floor = {"bc1": 30, "bc2": 30, "bc3": 30, "bc4": 40, "bc5": 40, "bc6h": 30, "bc7": 30, "rgba8": 99, "r8": 99, "r16": 99, "rg16f": 99, "rgba16f": 99}
+    chan = {"bc1": [0, 1, 2], "bc2": [0, 1, 2, 3], "bc3": [0, 1, 2, 3], "bc4": [0], "bc5": [0, 1], "bc6h": [0, 1, 2], "bc7": [0, 1, 2, 3], "rgba8": [0, 1, 2, 3],
+            "r8": [0], "r16": [0], "rg16f": [0, 1], "rgba16f": [0, 1, 2, 3]}
+    res = {}
+    for key, (efmt, _) in tpac.TEX_FORMATS.items():
+        try:
+            tp, rp, r = tpac.write_texture(png, "codec%s_d" % key, key, out_dir=A, rdc_dir=R)
+            r2, pix = tpac.tex_pixels(tp, R)
+            good = (r2["format"] == efmt and r2["hash_ok"] and all(e["hash_ok"] for e in r2["entries"]) and r2.get("rdc_h1_ok", True) and r2.get("rdc_h2_ok", True)
+                    and tw_formats.texture_pixel_hash(pix) == r2["unk8"] and len(pix) == tpac.tex_bytes(r2))
+            res[key] = _psnr(img, tpac.decode_mip(r2, pix, 0), chan[key])
+            check("%s written and read back" % key, good)
+            check("%s PSNR >= %d" % (key, floor[key]), res[key] >= floor[key], "PSNR %.1f" % res[key])
+        except Exception as ex:
+            check("%s write" % key, False, repr(ex))
+    # the one-mode BC6H encoder on a high dynamic range picture: it decodes, stays near the input, and writes mode 11 only
+    hdr = (np.exp(np.random.RandomState(2).normal(-1, 1, (64, 64, 1))) * np.linspace(0.1, 4, 64)[None, :, None] * np.ones((1, 1, 3))).astype(np.float32)
+    e = tpac.encode_mip(np.concatenate([hdr, np.ones((64, 64, 1), np.float32)], 2), "BC6H_UF16"); dec = tpac.decode_float(e, 64, 64, "BC6H_UF16")[..., :3]
+    rel = float(np.median(np.abs(dec - hdr) / np.maximum(hdr, 1e-3)))
+    check("BC6H HDR picture decodes finite, median relative error %.3f < 0.15" % rel, np.isfinite(dec).all() and rel < 0.15)
+    check("BC6H encoder writes mode 11 only", set(texcodec.bc6h_modes(np.frombuffer(e, np.uint8).reshape(-1, 16)).tolist()) == {11})
+    good = sum(1 for _, ok in checks if ok)
+    report("codecs", good == len(checks) and checks != [], "%d of %d checks (%s); PSNR of the formats written from a synthetic picture: %s (%.0f s)" % (
+        good, len(checks), ", ".join(n for n, ok in checks if not ok) or "all passed", ", ".join("%s %.1f" % kv for kv in res.items()), time.time() - t0), notes)
 
 
 # ------------------------------------------------------------------------------------------------------------------ caches
@@ -311,6 +439,7 @@ def main(argv):
     print("material template: ", templates_source("material"))
     if "packages" not in skip: section_packages(limit, max_mb, full)
     if "textures" not in skip: section_textures(int(opt("--textures", 4)))
+    if "codecs" not in skip: section_codecs()
     if "caches" not in skip: section_caches(int(opt("--caches", 300)))
     if "skeletons" not in skip: section_skeletons()
     if "synthetic" not in skip: section_synthetic()

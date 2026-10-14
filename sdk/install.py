@@ -3,7 +3,7 @@
 # copies a stage into the module with a backup and a manifest, `revert` puts the backup back, and both refuse while the game
 # runs. Library code lives in tpac.py (textures, materials, animations, clips, clip caches), sdk_mesh.py (meshes) and
 # sdk_skeleton.py (skeletons); validators in validate.py; layouts in their headers.
-#   python install.py texture <png> [--name N] [--format bc1|bc3|bc4|bc5|bc7|rgba8] [--usage U] [--no-mips]
+#   python install.py texture <png> [--name N] [--format bc1|bc2|bc3|bc4|bc5|bc6h|bc7|r8|r16|rg16f|rgba16f|rgba8] [--usage U] [--no-mips]
 #   python install.py material <name> --diffuse T [--normal T] [--specular T] [--shader S] [--blend B] [--flags a,b]
 #                              [--static|--skinned] [--template <mtl.tpac>]
 #   python install.py retex <installed material> --diffuse T [--normal T] [--specular T]
@@ -293,6 +293,7 @@ def main(argv=None):
     config.require_game()
     s, A, R = stage_dirs(stage)
     if cmd == "texture":
+        if opt("--format") and opt("--format") not in tpac.TEX_FORMATS: sys.exit("format: " + "|".join(tpac.TEX_FORMATS))
         out, rp, r = tpac.write_texture(a[1], opt("--name"), opt("--format"), opt("--usage"), "--no-mips" not in a,
                                         opt("--flags").split(",") if opt("--flags") else (), force, A, R)
         print("staged", out, "+", os.path.basename(rp), "(%s, %dx%d, usage %s)" % (r["format"], r["w"], r["h"], r["usage"]))
@@ -374,7 +375,7 @@ def main(argv=None):
                 try: r, pix = tpac.tex_pixels(f)
                 except Exception as ex: print("ERROR", os.path.basename(f), ex); bad += 1; continue
                 good = r["hash_ok"] and all(e["hash_ok"] for e in r["entries"]) and r.get("rdc_h1_ok", True) and r.get("rdc_h2_ok", True) \
-                    and len(pix) == sum(tpac.mip_bytes(max(1, r["w"] >> k), max(1, r["h"] >> k), r["format"]) for k in range(r["mips"]))
+                    and len(pix) == tpac.tex_bytes(r)
                 ok += good; bad += not good
                 if not good: print("check failed:", os.path.basename(f))
             print("%d textures consistent, %d not" % (ok, bad))
