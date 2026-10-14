@@ -9,6 +9,11 @@
 //   ping                                   is the game there
 //   state                                  the screen, the mission's scene, the player's position, troops alive
 //   ground x= y=                           terrain height at a spot of the current scene
+//   raycast x= y= [top=] [bottom=]         a vertical ray down at x, y (default from 50 m above the ground to 10 m below):
+//                                          what it hits first, terrain or an entity's collision body, and how far down;
+//                                          exclude=<hex body flags> (default the engine's focus ray filter), fixed=1 for the
+//                                          ray cast variant on the fixed-step physics world
+//   entity name=                           an entity of the scene by name: position, body flags, physics bounding box
 //   teleport x= y= [z=]                    move the player (and the mount) there; z defaults to the ground
 //   look bearing= [elevation=]             turn the camera, in degrees (bearing 0 looks along +y)
 //   screenshot path=                       write a screenshot (a .bmp) at the end of this frame
@@ -112,6 +117,33 @@ namespace __MOD__
                     Need(m);
                     r["z"] = m.Scene.GetGroundHeightAtPosition(new Vec3(Num(a, "x"), Num(a, "y"), 10000f));
                     return r;
+                case "raycast":
+                {
+                    Need(m);
+                    float x = Num(a, "x"), y = Num(a, "y"), g = m.Scene.GetGroundHeightAtPosition(new Vec3(x, y, 10000f));
+                    float zTop = a.ContainsKey("top") ? Num(a, "top") : g + 50f, zBottom = a.ContainsKey("bottom") ? Num(a, "bottom") : g - 10f;
+                    BodyFlags ex = a.ContainsKey("exclude") ? (BodyFlags)Convert.ToUInt32(a["exclude"], 16) : BodyFlags.CommonFocusRayCastExcludeFlags;
+                    float dist; Vec3 at; WeakGameEntity ent;
+                    bool hit = a.ContainsKey("fixed") && a["fixed"] == "1"
+                        ? m.Scene.RayCastForClosestEntityOrTerrainFixedPhysics(new Vec3(x, y, zTop), new Vec3(x, y, zBottom), out dist, out at, out ent, 0.01f, ex)
+                        : m.Scene.RayCastForClosestEntityOrTerrain(new Vec3(x, y, zTop), new Vec3(x, y, zBottom), out dist, out at, out ent, 0.01f, ex);
+                    r["hit"] = hit; r["terrain_z"] = g;
+                    if (hit) { r["z"] = at.z; r["distance"] = dist; r["entity"] = ent.IsValid ? ent.Name : null; }
+                    return r;
+                }
+                case "entity":
+                {
+                    Need(m);
+                    if (!a.ContainsKey("name")) throw new Exception("entity needs name=");
+                    GameEntity e = m.Scene.GetFirstEntityWithName(a["name"]);
+                    if (e == null) throw new Exception("no entity named " + a["name"]);
+                    Vec3 p = e.GlobalPosition; r["position"] = new[] { p.x, p.y, p.z };
+                    r["body_flags"] = ((uint)e.BodyFlag).ToString("x"); r["physics_desc_flags"] = ((uint)e.PhysicsDescBodyFlag).ToString("x");
+                    var bb = e.ComputeGlobalPhysicsBoundingBoxMinMax();
+                    r["physics_box_min"] = new[] { bb.Item1.x, bb.Item1.y, bb.Item1.z }; r["physics_box_max"] = new[] { bb.Item2.x, bb.Item2.y, bb.Item2.z };
+                    try { r["physics_material"] = e.GetPhysicsMaterial().Name; } catch (Exception) { r["physics_material"] = null; }
+                    return r;
+                }
                 case "teleport":
                 {
                     Need(m);
@@ -169,6 +201,7 @@ namespace __MOD__
                     InformationManager.DisplayMessage(new InformationMessage(a.ContainsKey("text") ? a["text"] : ""));
                     return r;
                 case "quit":
+                    if (AutoTest.On) AutoTest.Done();          // the end marker for the harness, then quit
                     Utilities.QuitGame();
                     return r;
                 default:

@@ -174,6 +174,9 @@ def install(stage, dry=False, repack=True, verify=False, owner=None):
             shutil.copy2(src, dst)
         print("copied %d of %d (%d already identical so far)" % (min(i + 200, len(plan)), len(plan), min(i + 200, len(plan)) - len(man["files"])))
     man["complete"] = True; write_manifest(mp, man)
+    # the game reads a module's Assets folder (and its caches) only when the module also has an AssetSources folder
+    if any(dst.startswith(os.path.join(config.MODULE, "Assets")) for _, dst in plan) and not os.path.isdir(config.ASSET_SOURCES):
+        os.makedirs(config.ASSET_SOURCES); print("made", config.ASSET_SOURCES, "(without it the game does not load the module's Assets)")
     print("installed %d files; manifest %s (revert: python install.py revert)" % (len(man["files"]), mp))
     after_loose_change([e["dest"] for e in man["files"]], repack)
 

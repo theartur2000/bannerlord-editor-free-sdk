@@ -365,6 +365,22 @@ def asset_clip(a):
     return res
 
 
+@command("asset.collision", "Stages a collision body (physics shape) made of capsules and spheres, for scene entities (`scene.add_entity --physics`).",
+         [P("name", help="the shape's name, which entities refer to", required=True),
+          P("capsule", "list", help='"x0 y0 z0 x1 y1 z1 radius" in metres, one per capsule (repeat, or separate with commas)'),
+          P("sphere", "list", help='"x y z radius" in metres, one per sphere'), P("material", help="physics material name", default="stone"), STAGE, P("force", "bool")], writes=True)
+def asset_collision(a):
+    import physics
+    caps = [_floats(c, 7, "--capsule") for c in a.get("capsule") or ()]; sph = [_floats(s_, 4, "--sphere") for s_ in a.get("sphere") or ()]
+    if not caps and not sph: raise BlError("give at least one --capsule or --sphere")
+    shape = physics.build(a["name"], capsules=[physics.capsule(c[:3], c[3:6], c[6]) for c in caps], spheres=[physics.sphere(s_[:3], s_[3]) for s_ in sph], material=a.get("material") or "stone")
+    c = _cfg(); out = os.path.join(c.SDK_STAGE_DIR, a.get("stage") or "work", "Assets")
+    if a.get("dry"): return {"would_write": os.path.join(out, a["name"] + "_phys.tpac"), "capsules": len(caps), "spheres": len(sph)}
+    try: p = physics.write_package(shape, out, bool(a.get("force")))
+    except FileExistsError as e: raise BlError(str(e), "pass --force to replace it")
+    return {"staged": [p], "capsules": len(caps), "spheres": len(sph), "note": "written in the game's format; not yet loaded in game"}
+
+
 def _opts(a, keys): return [x for k in keys if a.get(k) not in (None, "") for x in ("--" + k.replace("_", "-"), str(a[k]))]
 
 
@@ -480,10 +496,11 @@ def scene_ground(a):
 @command("scene.add_entity", "Places a prefab (or a mesh by name) in a scene.",
          [SCENE, P("prefab", help="a prefab name (see scene.info of a shipped scene for names in use)"), P("mesh", help="instead of a prefab: a metamesh name"),
           P("position", help="x y z in metres; with --on-ground only x y", required=True), P("on_ground", "bool", "take z from the terrain (plus the z given, if any)"),
-          P("rotation", help="x y z in degrees; applied as Rz . Rx . Ry, so the third number is the turn around the vertical"), P("scale", help="x y z"), P("name"), P("tags", "list")], writes=True)
+          P("rotation", help="x y z in degrees; applied as Rz . Rx . Ry, so the third number is the turn around the vertical"), P("scale", help="x y z"), P("name"), P("tags", "list"),
+          P("physics", help="a collision shape for the entity (a shipped one, or one staged with asset.collision)")], writes=True)
 def scene_add_entity(a):
     import scene
-    if not a.get("prefab") and not a.get("mesh"): raise BlError("give --prefab or --mesh")
+    if not a.get("prefab") and not a.get("mesh") and not a.get("physics"): raise BlError("give --prefab, --mesh or --physics")
     f = _scene_folder(a["scene"]); _writable_scene(f) if not a.get("dry") else None
     pos = [float(x) for x in str(a["position"]).replace(",", " ").split()] if not isinstance(a["position"], (list, tuple)) else [float(x) for x in a["position"]]
     if a.get("on_ground"):
@@ -496,6 +513,7 @@ def scene_add_entity(a):
     kw = {"position": tuple(pos), "rotation": tuple(math.radians(x) for x in rot), "tags": tuple(a.get("tags") or ())}     # the file holds radians
     if a.get("scale"): kw["scale"] = _floats(a["scale"], 3, "--scale")
     if a.get("name"): kw["name"] = a["name"]
+    if a.get("physics"): kw["physics"] = a["physics"]
     if a.get("mesh"): kw["mesh"] = a["mesh"]; kw.setdefault("name", a["mesh"])
     else: kw["prefab"] = a["prefab"]
     doc.add_entity(**kw)
@@ -735,7 +753,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, teleport, look, screenshot, spawn, remove, say, quit.",
+         "Commands: ping, state, ground, raycast, entity, teleport, look, screenshot, spawn, remove, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):
