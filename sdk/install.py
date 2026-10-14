@@ -1,5 +1,5 @@
 # The SDK's front door: FBX / PNG in, game-ready Bannerlord packages out, no Modding Kit editor.
-# Every writer stages into <SDK_STAGE_DIR>/<stage>/{Assets,RuntimeDataCache[,ModuleData]} (default stage "work"); `install`
+# Every writer stages into <SDK_STAGE_DIR>/<stage>/{Assets,RuntimeDataCache[,ModuleData,GUI]} (default stage "work"); `install`
 # copies a stage into the module with a backup and a manifest, `revert` puts the backup back, and both refuse while the game
 # runs. Library code lives in tpac.py (textures, materials, animations, clips, clip caches), sdk_mesh.py (meshes) and
 # sdk_skeleton.py (skeletons); validators in validate.py; layouts in their headers.
@@ -40,9 +40,10 @@ import config, tpac
 STAGES = config.SDK_STAGE_DIR
 BACKUPS = config.SDK_BACKUP_DIR
 MODULE_DATA = config.MODULE_DATA
-# stage subfolder -> module folder (ModuleData: XML a generator staged; Module: module root files such as SubModule.xml)
+# stage subfolder -> module folder (ModuleData: XML a generator staged; Module: module root files such as SubModule.xml;
+# GUI: <module>/GUI, where the game reads every *SpriteData.xml, brush and prefab XML)
 TARGETS = (("Assets", tpac.ASSETS), ("RuntimeDataCache", tpac.RDC_DIR), ("ModuleData", MODULE_DATA),
-           ("Module", config.MODULE),
+           ("Module", config.MODULE), ("GUI", os.path.join(config.MODULE, "GUI")),
            ("SceneObj", os.path.join(config.MODULE, "SceneObj")))   # SceneObj/<scene id>/<files>
 
 game_running = config.game_running

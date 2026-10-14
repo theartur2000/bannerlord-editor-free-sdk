@@ -79,6 +79,7 @@ arguments. [docs/AGENTS.md](docs/AGENTS.md) is the guide written for agents.
 | Machine | `doctor`, `commands`, `compat` |
 | Project | `new`, `build`, `deploy`, `run`, `workshop.config` |
 | Assets | `asset.texture`, `asset.material`, `asset.mesh`, `asset.skeleton`, `asset.anim`, `asset.clip`, `stage.list`, `stage.verify`, `install`, `revert`, `status` |
+| UI | `ui.sprites` |
 | Scenes | `scene.list`, `scene.info`, `scene.entities`, `scene.ground`, `scene.add_entity`, `scene.remove_entities`, `scene.copy`, `scene.check`, `scene.preview`, `scene.heightmap`, `scene.from_heightmap`, `scene.register` |
 | Meshes | `mesh.find`, `mesh.info`, `mesh.preview`, `mesh.export`, `physics.info` |
 | Campaign map | `worldmap.at`, `worldmap.settlements` |

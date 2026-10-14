@@ -432,6 +432,26 @@ def status(a):
     return {"lines": LOG[before:]}
 
 
+# ---------------------------------------------------------------- UI
+
+@command("ui.sprites", "Sprite sheets for the module's Gauntlet UI from a folder of PNGs (<category>/<sprite>.png), made by the game's own generator "
+         "on a private copy; stages them (sheets, SpriteData XML) for `bl install`. Nothing in the game or the module is touched.",
+         [P("folder", required=True, help="a folder with one sub-folder per sprite category; the layout is in the header of sdk/sprites.py"), STAGE,
+          P("timeout", "int", "seconds the generator may take", default=300)], writes=True)
+def ui_sprites(a):
+    import sprites
+    c = _cfg(); mod = _module_dir(); stage = a.get("stage") or "work"; dry = bool(a.get("dry"))
+    if not dry: c.require_game()
+    try:
+        res = sprites.build(os.path.abspath(a["folder"]), os.path.basename(os.path.normpath(mod)), os.path.join(c.SDK_STAGE_DIR, stage),
+                            os.path.join(c.SDK_STAGE_DIR, "_sprites", stage), os.path.join(c.GAME, sprites.BIN), c.MODULES, dry=dry, timeout=int(a.get("timeout") or 300), log=print)
+    except sprites.SpriteError as e:
+        err = BlError(str(e), e.hint); err.result = {"problems": e.problems}; raise err
+    if os.path.isdir(mod) and not os.path.isdir(os.path.join(mod, "AssetSources")):
+        res["warnings"].append("the module has no AssetSources folder, and the game reads a module's Assets folder only if it has one")
+    return res
+
+
 # ---------------------------------------------------------------- scenes
 
 SCENE = P("scene", help="a scene folder, or the id of a scene in the stage, the project, the module or the game", required=True)

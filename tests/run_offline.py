@@ -228,6 +228,127 @@ def bridge_request_and_answer():
     assert bridge.enable(mod, False) is False
 
 
+def _sprite_png(path, w, h, color, rgba=True):
+    import terrain
+    a = np.zeros((h, w, 4), np.uint8); a[..., :3] = color; a[..., 3] = 255
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f: f.write(terrain.png_encode(a if rgba else a[..., 0]))
+
+
+def _fake_generator(container, module_id):
+    """What the game's generator does, in the simplest way: one row of sprites per category on a sheet, the sheet written to
+    <container>/AssetSources/GauntletUI, the SpriteData XML next to the module's SpriteParts. A single-channel category gets a grey PNG."""
+    import sprites, terrain, pngio
+    root = os.path.join(container, module_id, "SpriteParts"); cats = {}
+    cfg, _ = sprites.read_config(os.path.join(root, "Config.xml"))
+    for cat in sorted(os.listdir(root)):
+        if os.path.isdir(os.path.join(root, cat)): cats[cat] = sorted(f for f in os.listdir(os.path.join(root, cat)) if f.endswith(".png"))
+    out = os.path.join(container, "AssetSources", "GauntletUI"); os.makedirs(out, exist_ok=True)
+    cx, px, sx = [], [], []
+    for cat, fns in cats.items():
+        sizes = [sprites.png_size(os.path.join(root, cat, f)) for f in fns]
+        W, H = sum(w for w, _ in sizes), max(h for _, h in sizes)
+        if not cfg.get(cat, {}).get("unique"): W, H = (W + 3) // 4 * 4, (H + 3) // 4 * 4        # unique packing keeps the sprite's own size
+        sheet = np.zeros((H, W, 4), np.uint8); x = 0
+        for f, (w, h) in zip(fns, sizes):
+            sheet[:h, x:x + w] = pngio.read_png(os.path.join(root, cat, f))["rgba"]
+            px.append("<SpritePart><SheetID>1</SheetID><Name>%s</Name><Width>%d</Width><Height>%d</Height><SheetX>%d</SheetX><SheetY>0</SheetY><CategoryName>%s</CategoryName></SpritePart>" % (f[:-4], w, h, x, cat))
+            sx.append("<GenericSprite><Name>%s</Name><SpritePartName>%s</SpritePartName></GenericSprite>" % (f[:-4], f[:-4])); x += w
+            nx = os.path.join(root, cat, f[:-4] + ".xml")
+            if os.path.isfile(nx): sx.append("<NineRegionSprite><Name>%s</Name></NineRegionSprite>" % sprites.read_nine_region(nx, f[:-4])[0])
+        with open(os.path.join(out, "%s_1.png" % cat), "wb") as fh: fh.write(terrain.png_encode(sheet[..., 0] if cfg.get(cat, {}).get("single") else sheet))
+        cx.append('<SpriteCategory><Name>%s</Name><SpriteSheetCount>1</SpriteSheetCount><SpriteSheetSize ID="1" Width="%d" Height="%d" /></SpriteCategory>' % (cat, W, H))
+    with open(os.path.join(container, module_id, module_id + "SpriteData.xml"), "w", encoding="utf-8") as f:
+        f.write("<SpriteData><SpriteCategories>%s</SpriteCategories><SpriteParts>%s</SpriteParts><Sprites>%s</Sprites></SpriteData>" % ("".join(cx), "".join(px), "".join(sx)))
+    return ["fake generator ran"]
+
+
+@test
+def sprites_folder_checks_name_every_fault():
+    import sprites
+    d = os.path.join(TMP, "spr_bad"); shutil.rmtree(d, ignore_errors=True)
+    _sprite_png(os.path.join(d, "loose.png"), 8, 8, 1)                        # straight in the folder: the generator crashes on it
+    _sprite_png(os.path.join(d, "ui_a", "coin.png"), 8, 8, 1); _sprite_png(os.path.join(d, "ui_b", "coin.png"), 8, 8, 2)   # one name twice
+    _sprite_png(os.path.join(d, "ui_a", "btn.png"), 16, 16, 3)
+    open(os.path.join(d, "ui_a", "btn.xml"), "w").write("<NineRegionSprite><Name>btn</Name><LeftWidth>4</LeftWidth><RightWidth>4</RightWidth><TopHeight>4</TopHeight><BottomHeight>4</BottomHeight></NineRegionSprite>")
+    _sprite_png(os.path.join(d, "bad cat", "x.png"), 8, 8, 1)
+    _sprite_png(os.path.join(d, "ui_a", "g1", "g2", "g3", "g4", "deep.png"), 8, 8, 1)
+    _sprite_png(os.path.join(d, "ui_c", "huge.png"), 4095, 4, 1)
+    open(os.path.join(d, "ui_a", "orphan.xml"), "w").write("<x/>"); open(os.path.join(d, "Config.xml"), "w").write('<?xml version="1.0"?><Config/>')
+    lay = sprites.read_layout(d); text = "\n".join(lay["problems"])
+    for part in ("loose.png sits straight", "used twice", "is the PNG's own sprite name", "bad cat", "too deep", "does not fit a 4096 sheet", "<?xml ?> line"):
+        assert part in text, (part, text)
+    assert any("orphan.xml has no PNG" in w for w in lay["warnings"])
+    good = os.path.join(TMP, "spr_good"); shutil.rmtree(good, ignore_errors=True)
+    _sprite_png(os.path.join(good, "ui_m", "coin.png"), 8, 8, 1); _sprite_png(os.path.join(good, "ui_m", "grp", "star.png"), 8, 8, 2)
+    lay = sprites.read_layout(good); assert not lay["problems"] and lay["names"] == ["coin", "grp\\star"], lay
+    # names another module's SpriteData already defines are refused
+    mods = os.path.join(TMP, "spr_modules", "Other", "GUI"); os.makedirs(mods, exist_ok=True)
+    open(os.path.join(mods, "OtherSpriteData.xml"), "w").write("<SpriteData><SpriteCategories><SpriteCategory><Name>ui_m</Name></SpriteCategory></SpriteCategories><Sprites><GenericSprite><Name>coin</Name></GenericSprite></Sprites></SpriteData>")
+    modules = os.path.dirname(os.path.dirname(mods))
+    got = sprites.clashes(lay, sprites.game_names(modules, "Mine")); assert len(got) == 2, got
+    assert sprites.clashes(lay, sprites.game_names(modules, "Other")) == []     # the module's own file does not count
+
+
+@test
+def sprites_stage_the_sheets_with_the_generator_stubbed():
+    import sprites, tpac, install, pngio
+    d = os.path.join(TMP, "spr_in"); shutil.rmtree(d, ignore_errors=True)
+    _sprite_png(os.path.join(d, "ui_m", "coin.png"), 12, 8, (255, 200, 0)); _sprite_png(os.path.join(d, "ui_m", "gem.png"), 20, 8, (0, 200, 255))
+    _sprite_png(os.path.join(d, "ui_mask", "disc.png"), 8, 8, (255, 255, 255))
+    _sprite_png(os.path.join(d, "ui_odd", "odd.png"), 5, 3, (9, 9, 9))
+    open(os.path.join(d, "ui_m", "coin.xml"), "w").write("<NineRegionSprite><Name>coin_box</Name><LeftWidth>2</LeftWidth><RightWidth>2</RightWidth><TopHeight>2</TopHeight><BottomHeight>2</BottomHeight></NineRegionSprite>")
+    open(os.path.join(d, "Config.xml"), "w").write('<Config><Category Name="ui_mask"><SingleChannel/></Category><Category Name="ui_odd"><PackAllSpritesToUniqueTextures/></Category></Config>')
+    stage = os.path.join(TMP, "spr_stage"); work = os.path.join(TMP, "spr_work"); shutil.rmtree(stage, ignore_errors=True); shutil.rmtree(work, ignore_errors=True)
+    dry = sprites.build(d, "Mine", stage, work, os.path.join(TMP, "no_game_bin"), dry=True)
+    assert not os.path.exists(stage) and not os.path.exists(work) and sorted(dry["categories"]) == ["ui_m", "ui_mask", "ui_odd"] and dry["categories"]["ui_m"]["nine_region"] == 1
+    res = sprites.build(d, "Mine", stage, work, os.path.join(TMP, "no_game_bin"), generate=_fake_generator, log=lambda *x: None)
+    assert res["sheets"]["ui_mask"][1]["format"] == "r8" and res["sheets"]["ui_m"][1]["format"] == "bc7" and res["sheets"]["ui_odd"][1]["format"] == "rgba8", res["sheets"]
+    assert sorted(os.listdir(os.path.join(stage, "Assets"))) == ["ui_m_1_tex.tpac", "ui_mask_1_tex.tpac", "ui_odd_1_tex.tpac"]
+    assert open(os.path.join(stage, "GUI", "MineSpriteData.xml")).read().count("<GenericSprite>") == 4 and len(os.listdir(os.path.join(stage, "RuntimeDataCache"))) == 3
+    for cat, fmt in (("ui_m", "BC7"), ("ui_mask", "R8_UNORM"), ("ui_odd", "R8G8B8A8_UNORM")):
+        r, pix = tpac.tex_pixels(os.path.join(stage, "Assets", cat + "_1_tex.tpac"), os.path.join(stage, "RuntimeDataCache"))
+        assert r["name"] == cat + "_1" and r["format"] == fmt and r["mips"] == 1 and r["import_flags"] == ["dont_degrade", "dont_delay_loading"], r
+        assert r["hash_ok"] and all(e["hash_ok"] for e in r["entries"]) and len(pix) == tpac.tex_bytes(r)
+        sheet = pngio.read_png(os.path.join(work, "gen", "AssetSources", "GauntletUI", cat + "_1.png"))["rgba"]
+        assert (r["w"], r["h"]) == (sheet.shape[1], sheet.shape[0])
+        if fmt != "BC7": assert np.array_equal(np.asarray(tpac.decode_mip(r, pix)).reshape(sheet.shape[0], sheet.shape[1], -1)[..., 0], sheet[..., 0]), cat     # the exact formats keep every pixel
+    # a stage `bl install` copies: the SpriteData XML goes to <module>/GUI
+    plan = {os.path.basename(s): t for s, t in install.plan_for(stage)}
+    assert plan["MineSpriteData.xml"] == os.path.join(install.config.MODULE, "GUI", "MineSpriteData.xml") and len(plan) == 7, plan
+    # a rerun without a category takes its staged package out again, and a generator that wrote nothing is caught
+    shutil.rmtree(os.path.join(d, "ui_odd")); sprites.build(d, "Mine", stage, work, "x", generate=_fake_generator, log=lambda *x: None)
+    assert sorted(os.listdir(os.path.join(stage, "Assets"))) == ["ui_m_1_tex.tpac", "ui_mask_1_tex.tpac"] and len(os.listdir(os.path.join(stage, "RuntimeDataCache"))) == 2
+    try: sprites.build(d, "Mine", stage, work, "x", generate=lambda c, m: [], log=lambda *x: None)
+    except sprites.SpriteError as e: assert "no MineSpriteData.xml" in str(e)
+    else: raise AssertionError("a generator that wrote nothing was accepted")
+
+
+@test
+def sprite_generator_runs_only_on_a_private_copy():
+    import sprites
+    bin_dir = os.path.join(TMP, "gbin", "bin", "Win64_Shipping_wEditor"); os.makedirs(bin_dir, exist_ok=True)
+    open(os.path.join(bin_dir, sprites.LIB), "wb").close()
+    work = os.path.join(TMP, "gwork"); os.makedirs(os.path.join(work, "gen", "M"), exist_ok=True)
+    for bad in (os.path.join(TMP, "gbin", "Modules", "Native"), os.path.join(TMP, "elsewhere"), os.path.join(work, "M")):
+        os.makedirs(bad, exist_ok=True)
+        try: sprites.run_generator(bin_dir, bad, work)
+        except sprites.SpriteError as e: assert "refusing" in str(e), e
+        else: raise AssertionError("the generator would have run on " + bad)
+
+
+@test
+def bl_ui_sprites_checks_and_stages_nothing_on_a_dry_run():
+    d = os.path.join(TMP, "spr_cli"); shutil.rmtree(d, ignore_errors=True); mod = os.path.join(TMP, "no_game", "Modules", "CliMod")
+    _sprite_png(os.path.join(d, "ui_cli", "coin.png"), 8, 8, 1)
+    out = bl_run("ui.sprites", d, "--module", mod, "--dry"); r = out["result"]
+    assert out["ok"] and r["module"] == "CliMod" and r["categories"]["ui_cli"]["sprites"] == 1 and r["names"] == ["coin"], out
+    assert not os.path.exists(os.path.join(TMP, "home", "stage")), "a dry run staged something"
+    _sprite_png(os.path.join(d, "loose.png"), 8, 8, 1)
+    bad = bl_run("ui.sprites", d, "--module", mod, "--dry"); assert not bad["ok"] and "loose.png" in bad["result"]["problems"][0] and "hint" in bad
+    assert not bl_run("ui.sprites", os.path.join(TMP, "nothing_here"), "--module", mod, "--dry")["ok"]
+
+
 def main():
     failed = []
     for t in TESTS:

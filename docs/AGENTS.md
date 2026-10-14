@@ -65,6 +65,14 @@ bl revert                    # undo the newest install
 
 Writers stage their output under the SDK's working folder; `install` copies a stage into the module.
 
+UI sprites come from a folder of PNGs, one sub-folder per sprite category (layout in the header of `sdk/sprites.py`):
+
+```powershell
+bl ui.sprites art/ui --dry          # checks the folder, names every fault, writes nothing
+bl ui.sprites art/ui                # the game's sprite sheet generator on a private copy, then sheets + GUI/<id>SpriteData.xml staged
+bl install
+```
+
 ## Scenes
 
 ```powershell
