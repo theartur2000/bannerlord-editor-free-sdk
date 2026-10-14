@@ -143,14 +143,18 @@ def find_project(start="."):
         d = up
 
 
-def register_scene(project, mod, scene_id, name=None, terrain="Plain", remove=False):
-    """Adds a scene to (or removes it from) the project's Custom Battle list. Returns the ids listed afterwards."""
+KINDS = {"battle": "", "siege": ' is_siege_map="true"', "village": ' is_village_map="true"', "lords_hall": ' is_lords_hall_map="true"'}
+
+
+def register_scene(project, mod, scene_id, name=None, terrain="Plain", remove=False, kind="battle"):
+    """Adds a scene to (or removes it from) the project's Custom Battle list. Returns the ids listed afterwards.
+    kind: battle, siege (a castle or town with walls), village, lords_hall: the flags Custom Battle sorts its maps by."""
     p = os.path.join(project, "ModuleData", "%s_custom_battle_scenes.xml" % mod.lower())
     text = open(p, encoding="utf-8-sig").read() if os.path.isfile(p) else SCENES_XML
     text = re.sub(r'[ \t]*<Scene\s+id="%s"[^>]*>(?:\s*</Scene>)?\r?\n?' % re.escape(scene_id), "", text)
     if not remove:
         # {=!} marks a name that has no translation id
-        row = '\t<Scene id="%s" name="{=!}%s" terrain="%s"></Scene>\n' % (scene_id, (name or scene_id).replace('"', "'"), terrain)
+        row = '\t<Scene id="%s" name="{=!}%s" terrain="%s"%s></Scene>\n' % (scene_id, (name or scene_id).replace('"', "'"), terrain, KINDS[kind])
         i = text.rindex("</CustomBattleScenes>"); text = text[:i] + row + text[i:]
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8-sig", newline=NL) as f: f.write(text)

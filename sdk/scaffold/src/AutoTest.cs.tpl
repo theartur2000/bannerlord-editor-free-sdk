@@ -3,6 +3,7 @@
 // When the environment variable BANNERLORD_AUTOTEST is 1 and Modules/__MOD__/autostart.txt exists, the words in that
 // file are run and the game quits by itself:
 //   menu=<s>     wait that many seconds at the main menu first (time for an outside tool, for example to fill a scene slot)
+//   type=<id>    the Custom Battle game type before the map: Battle, Siege, Village (the ids the screen offers)
 //   scene=<id>   the Custom Battle map to fight on (a scene listed in ModuleData/__MODLOWER___custom_battle_scenes.xml)
 //   tod=<hour>   time of day of the battle (the nearest one Custom Battle offers)
 //   season=<id>  season of the battle: summer, fall, winter, spring
@@ -107,6 +108,18 @@ namespace __MOD__
         static void StartBattle(ScreenBase screen)
         {
             object vm = screen.GetType().GetField("_dataSource", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(screen);
+            string gtype = Word("type");
+            if (gtype != null)
+            {
+                object gg = vm.GetType().GetProperty("GameTypeSelectionGroup").GetValue(vm);
+                bool ok = Select(gg, "GameTypeSelection", it =>
+                {
+                    PropertyInfo pi = it.GetType().GetProperty("GameTypeStringId");
+                    return pi != null && string.Equals((string)pi.GetValue(it), gtype, StringComparison.OrdinalIgnoreCase);
+                });
+                Log.Write("game type " + gtype + (ok ? " selected" : " NOT OFFERED"));
+                if (!ok) { Fail("game type not offered"); return; }
+            }
             object maps = vm.GetType().GetProperty("MapSelectionGroup").GetValue(vm);
             string want = Word("scene");
             if (want != null)

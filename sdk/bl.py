@@ -665,12 +665,13 @@ def prefab_add(a):
 
 
 @command("scene.register", "Adds a scene to (or removes it from) the project's Custom Battle list, so it can be picked and test-run.",
-         [P("scene_id", required=True), P("name", help="the name shown in the list"), P("terrain", default="Plain"), P("remove", "bool")], writes=True)
+         [P("scene_id", required=True), P("name", help="the name shown in the list"), P("terrain", default="Plain"),
+          P("kind", help="battle, siege (castle or town walls), village, lords_hall", default="battle", choices=("battle", "siege", "village", "lords_hall")), P("remove", "bool")], writes=True)
 def scene_register(a):
     import scaffold
     d, pj = _need_project()
     if a.get("dry"): return {"would_edit": os.path.join(d, "ModuleData", pj["module"].lower() + "_custom_battle_scenes.xml")}
-    return {"listed": scaffold.register_scene(d, pj["module"], a["scene_id"], a.get("name"), a.get("terrain") or "Plain", bool(a.get("remove")))}
+    return {"listed": scaffold.register_scene(d, pj["module"], a["scene_id"], a.get("name"), a.get("terrain") or "Plain", bool(a.get("remove")), a.get("kind") or "battle")}
 
 
 # ---------------------------------------------------------------- meshes

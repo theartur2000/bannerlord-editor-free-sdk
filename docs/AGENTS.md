@@ -91,6 +91,18 @@ bl prefab add crate --mesh crate --physics crate_body     # a prefab of the proj
 A scene is named by a folder path or by an id. Ids are looked up in the stage, the project, the module and then the
 game. Scenes of the game's own modules are never changed: copy one first with `bl scene copy <id> <new name>`.
 
+Sieges, villages and lord's halls start from a shipped scene of that kind:
+
+```powershell
+bl scene copy battania_castle_a my_castle --to project
+bl scene add-entity my_castle --prefab my_tower --position "738 748 49.5"
+bl scene register my_castle --kind siege          # or village, lords_hall
+bl run --words "type=Siege scene=my_castle tod=12 fight secs=60 quit" --launch
+```
+
+`--on-ground` takes the height of the terrain. In towns and castles the walking surface is often a model above the
+terrain (a road, a ramp, a courtyard floor): give z yourself there, or measure it in game with `bl live raycast`.
+
 Positions are metres with z up. `--rotation` is in degrees and is applied as Rz . Rx . Ry, so the third number is the
 turn around the vertical.
 
