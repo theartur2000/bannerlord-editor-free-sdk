@@ -370,6 +370,93 @@ def data_patches_are_valid_xslt():
     assert sub.count('path="patchmod_settlements"') == 1
     datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X3", {"name": "Third"})
     assert open(os.path.join(d, "SubModule.xml"), encoding="utf-8").read().count('path="patchmod_settlements"') == 1
+def morph_keys_in_a_made_up_mesh_and_a_pose_package():
+    import morph, sdk_mesh, tpac
+    n, v = 5, 6; rng = np.random.RandomState(1)
+    s = dict(P=rng.rand(n, 3), pi=np.array([0, 1, 2, 3, 4, 4], "<u4"), N=rng.rand(v, 3), T=rng.rand(v, 3), B=rng.rand(v, 3), uv0=rng.rand(v, 2), uv1=rng.rand(v, 2), c0=np.zeros(v, "<u4"), F=np.array([[0, 1, 2], [3, 4, 5]], "<u4"), W=None)
+    plain = sdk_mesh.edit_blob(s); E = sdk_mesh.parse_edit(plain)
+    assert E["frames"] == [] and sdk_mesh.pack_edit(E) == plain
+    E3 = morph.with_frames(E, [morph.morph_key(E, t, {1: (0.1, 0, 0)}) for t in (0, 1, 2)]); blob = sdk_mesh.pack_edit(E3); back = sdk_mesh.parse_edit(blob)
+    assert sdk_mesh.pack_edit(back) == blob and [float(f["time"]) for f in back["frames"]] == [0, 1, 2] and abs(back["frames"][1]["P"][1, 0] - E["P"][1, 0] - 0.1) < 1e-6
+    assert np.array_equal(back["frames"][2]["P"][0], E["P"][0]) and len(back["frames"][0]["N"]) == v
+    try: morph.with_frames(E, [dict(time=0, P=np.zeros((n, 4)), N=np.zeros((v + 1, 4)))])
+    except ValueError: pass
+    else: raise AssertionError("a key frame with the wrong number of normals was accepted")
+    an = morph.pose("smile", {0: {95: 0.25}, 6: {95: 1.0, 96: 0.5}}, source=bytes(range(16)))
+    data = morph.package_bytes(an, package=bytes(16), guid=bytes(range(16, 32)))
+    p = os.path.join(TMP, "smile_morph.tpac"); open(p, "wb").write(data)
+    r = morph.check_animations([p]); assert r["animations"] == 1 and r["identical"] == 1 and r["frames"] == 2 and r["targets"] == 3 and not r["failures"], r
+    pk = morph.tpac_pack.read_package(p); it = pk["items"][0]
+    e = it["entries"][0]; d = morph.parse_definition(tpac.lz4_decompress(e["data"], e["raw"]) if e["stored"] < e["raw"] else e["data"])
+    assert d["name"] == "smile" and [f for f, _ in d["frames"]] == [0, 6] and list(d["frames"][1][1]["target"]) == [95, 96] and np.allclose(d["frames"][1][1]["progress"], [1.0, 0.5])
+    assert morph.parse_record(it["record"])["source"] == bytes(range(16))
+
+
+@test
+def cloth_map_cook_and_clothing_block_round_trip():
+    import cloth, sdk_mesh, tw_formats
+    rng = np.random.RandomState(2); V = 9
+    mp = dict(index=rng.randint(0, 20, (V, 3)).astype("<u2"), weight=np.c_[rng.dirichlet([1, 1, 1], V), np.zeros(V)].astype("<f4"))
+    b = cloth.pack_map(mp); back = cloth.parse_map(b)
+    assert cloth.pack_map(back) == b and len(b) == 4 + 2 * 3 * V + 4 + 16 * V and not cloth.map_problems(back, V, 20)
+    assert cloth.map_problems(back, V + 1, 20) == ["vertex count"] and cloth.map_problems(back, V, 3) == ["index outside the proxy"]
+    for bad in (b[:-1], b + b"\0", struct.pack("<I", 4) + bytes(8) + struct.pack("<I", 4) + bytes(16)):
+        try: cloth.parse_map(bad)
+        except (ValueError, struct.error): pass
+        else: raise AssertionError("a broken cloth map was accepted")
+    c = 5; ck = dict(hash=7, counts=(c, 4, 1, 1, 1), bounds=np.array([[0, 0, 0, 1], [2, 2, 2, 1]], "<f4"),
+                     arrays=[struct.pack("<I", c) + bytes(4 * c), struct.pack("<I", c) + bytes(4 * c), struct.pack("<I", 1) + bytes(4)], tail=bytes(range(30)))
+    kb = cloth.pack_cook(ck); kk = cloth.parse_cook(kb)
+    assert cloth.pack_cook(kk) == kb and kk["counts"] == ck["counts"] and len(kk["arrays"]) >= 2 and cloth.cook_problems(kk, 4, [[0, 0, 0], [2, 2, 2]]) == [] and cloth.cook_problems(kk, 5) == ["particle count"]
+    sub = dict(guid=bytes(range(16)), name="cape", material="m", material_guid=bytes(16), P=rng.rand(3, 3), pi=np.arange(3, dtype="<u4"), F=np.array([[0, 1, 2]], "<u4"), W=None)
+    sm = tw_formats.parse_metamesh_record(sdk_mesh.meta_record(bytes(16), [sub]))["submeshes"][0]
+    cl = cloth.parse_clothing(sm["params"]); assert cloth.pack_clothing(cl) == sm["params"] and sorted(k for k in cl if k in cloth.MATERIAL_FIELDS) == sorted(cloth.MATERIAL_FIELDS)
+    cl.update(name="banner", wind=3.5, bending_stiffness=0.25); again = cloth.parse_clothing(cloth.pack_clothing(cl))
+    assert again["name"] == "banner" and again["wind"] == 3.5 and again["bending_stiffness"] == 0.25 and again["gravity"] == cl["gravity"]
+    try: cloth.parse_clothing(sm["params"] + b"\0")
+    except ValueError: pass
+    else: raise AssertionError("a clothing block with a trailing byte was accepted")
+
+
+@test
+def particle_effects_blank_copy_change_and_package():
+    import particles, tpac
+    for v in (0, 1, 2, 3, 4, 5, 7, 8, 9):
+        e = particles.blank_effect(2, v); b = particles.write_effect(e); d = particles.parse_effect(b)
+        assert particles.write_effect(d) == b and len(d["emitters"]) == 2 and len(d["emitters"][1]["pre"]) == 4 * particles.pre_size(v) and d["emitters"][1]["name"] == "Emitter 1", v
+    try: particles.blank_emitter(6)
+    except ValueError: pass
+    else: raise AssertionError("an unknown emitter version was accepted")
+    mat = bytes(range(1, 17)); eff = particles.parse_effect(particles.write_effect(particles.blank_effect(1, 4)))
+    new = particles.modify(eff, emission_rate=25, size=3, life=2.5, material=mat, color=(0.5, 0.25, 1.0), alpha_scale=0.5)
+    e0 = new["emitters"][0]; P = particles.named_params(e0)
+    assert P["emission_rate"]["base"] == 25 and P["particle_life"]["base"] == 2.5 and e0["guids"][3] == mat and np.allclose(e0["colors"][0, 1:4], [0.5, 0.25, 1.0]) and np.allclose(e0["alphas"][:, 1], [0, 0.5, 0])
+    assert particles.particle_size(e0)[0] == 3.0 and eff["emitters"][0]["params_b"][0]["base"] == 10.0, "modify must not change its input"
+    baked = bytes(range(256)) * 8
+    data = particles.package_bytes(new, baked, "blank_fx", package=bytes(16), guid=bytes(range(16, 32)))
+    p = os.path.join(TMP, "blank_fx_psys.tpac"); open(p, "wb").write(data)
+    res = list(particles.resources(p)); assert len(res) == 1 and res[0]["name"] == "blank_fx" and not particles.check_resource(res[0]), particles.check_resource(res[0])
+    assert [e["type"] for e in res[0]["entries"]] == [particles.EFFECT_DATA, particles.BAKED] and res[0]["entries"][1]["raw"] == baked
+    assert particles.write_effect(particles.parse_effect(res[0]["entries"][0]["raw"])) == particles.write_effect(new)
+    assert tpac.xxh64(res[0]["entries"][0]["raw"]) == struct.unpack("<Q", res[0]["entries"][0]["rest"][32:40])[0]
+    try: particles.parse_effect(particles.write_effect(new) + b"\0")
+    except ValueError: pass
+    else: raise AssertionError("trailing bytes after the last emitter were accepted")
+    assert particles.strings_of(b"\x00\x00\x06\x00\x00\x00sphere\x02\x00\x00\x003d") == ["sphere", "3d"]
+
+
+@test
+def resource_type_table_names_every_type_the_sdk_knows():
+    import restypes
+    names = {v[0] for v in restypes.RESOURCE_TYPES.values()}
+    assert len(restypes.RESOURCE_TYPES) == 13 and {"Metamesh", "Physics shape", "Texture", "Particle effect", "Morph animation", "GPU particle system"} <= names
+    assert restypes.describe(next(iter(restypes.RESOURCE_TYPES))).startswith("resource type: ") and restypes.describe(bytes(16)) == "unnamed"
+    assert restypes.describe(uuid_bytes("af41613e-bd4d-46ec-8284-debb56c042dc")) == "data type: Cloth map (cloth.py)"
+
+
+def uuid_bytes(s):
+    import uuid
+    return uuid.UUID(s).bytes_le
 
 
 def main():

@@ -263,7 +263,7 @@ def parse_metamesh_record(rec):
         sm["material"] = rec[o:o + 16]; sm["material_off"] = o; o += 16
         sm["factor"] = struct.unpack_from("<4f", rec, o); sm["factor2"] = struct.unpack_from("<4f", rec, o + 16); o += 32
         sm["u9"] = struct.unpack_from("<9I", rec, o); o += 36
-        sm["positions"], sm["faces"], sm["vertices"], sm["weighted"], _ = struct.unpack_from("<5I", rec, o); o += 20
+        sm["positions"], sm["faces"], sm["vertices"], sm["weighted"], sm["keys"] = struct.unpack_from("<5I", rec, o); o += 20
         sm["bbox_min"] = struct.unpack_from("<4f", rec, o); sm["bbox_max"] = struct.unpack_from("<4f", rec, o + 16)
         sm["centre"] = struct.unpack_from("<4f", rec, o + 32); o += 48
         sm["radius"], sm["bones"] = struct.unpack_from("<fI", rec, o); o += 8

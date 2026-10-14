@@ -1,6 +1,6 @@
 # Self-test: does this SDK read and write Bannerlord's formats correctly on YOUR game files? It needs only your own install
 # (BANNERLORD_DIR); nothing is written to the game folder, scratch output goes to <SDK_STAGE_DIR>/_selftest.
-#   python selftest.py [--limit 200] [--max-package-mb 300] [--textures 4] [--caches 300] [--physics 8] [--skip a,b] [--full]
+#   python selftest.py [--limit 200] [--max-package-mb 300] [--textures 4] [--caches 300] [--physics 8] [--morph 0] [--cloth 400] [--skip a,b] [--full]
 # Sections (each prints PASS or FAIL with counts):
 #   packages   parse each sampled Native .tpac and write it again with the SDK's package writer; the rebuilt bytes must equal
 #              the file (sha1). The sample is spread over AssetPackages and EmAssetPackages. --full: every package up to
@@ -21,13 +21,20 @@
 #              the game's own PhysX cooking library from its description must equal the stored hulls (all 8 mirrored copies) and mesh; plus
 #              a made-up capsule and sphere shape written to a package and read back, a made-up hull and mesh body that physics.encode()
 #              must refuse with cook=False, and the same two bodies cooked, written, read back and parsed
+#   survey     every resource type and data entry type in Native's packages has a name in restypes.py (13 resource types)
+#   morph      Native morph animations (poses of a face) and mesh edit data with key frames (face morph keys, cloth vertex keys, flag animations): decode and re-encode
+#              byte-identical (all of them with key frames, one plain one per package as a control; --morph N stops after N entries); a made-up mesh with key frames and a made-up pose written and read back; the real head's 101 keys named by skins.xml
+#   cloth      Native clothing materials of every submesh (all of them), cloth maps and cloth cooks (up to --cloth): re-pack byte-identical, structure checks; made-up map, cook
+#              and clothing block re-packed, the checks catch a planted fault
+#   particles  Native particles.tpac: every particle effect (all emitter versions), GPU particle record and vector field decodes and re-encodes byte-identical; blank effects of every
+#              emitter version; a shipped effect copied with a changed rate, size, life, colour, alpha and material, written, read back and compared with the original
 #   synthetic  a tiny made-up skeleton, animation, clip, clip cache, texture, material and mesh written to a scratch folder,
 #              read back, and run through the validators, which must pass them and must catch four planted faults
 # Exit code 0 only when every section passes.
-import collections, glob, hashlib, math, os, random, shutil, struct, sys, time
+import collections, glob, hashlib, math, os, random, shutil, struct, sys, time, uuid
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import numpy as np
-import config, tpac, tw_formats, tpac_pack, sdk_skeleton, sdk_mesh, pngio, physics
+import config, tpac, tw_formats, tpac_pack, sdk_skeleton, sdk_mesh, pngio, physics, morph, cloth, particles, restypes
 
 RESULTS = []
 
@@ -398,6 +405,146 @@ def _raises(fn, *a):
     return False
 
 
+# ------------------------------------------------------------------------------------------------------------------ morph, cloth, particles
+def section_survey():
+    t0 = time.time(); r = restypes.survey(restypes.packages("Native"))
+    unnamed = [str(uuid.UUID(bytes_le=g)) for g in r["types"] if g not in restypes.RESOURCE_TYPES]
+    dunnamed = {str(uuid.UUID(bytes_le=d)) for t in r["types"].values() for d in t["data"] if d not in restypes.DATA_TYPES}
+    ok = r["packages"] > 0 and not unnamed and len(r["types"]) <= len(restypes.RESOURCE_TYPES) and not dunnamed
+    report("survey", ok, "%d Native packages hold %d resources of %d types; types without a name in restypes.py: %s; data entry types without a name: %s (%.0f s)"
+           % (r["packages"], r["resources"], len(r["types"]), unnamed or "none", sorted(dunnamed) or "none", time.time() - t0))
+
+
+def section_morph(limit):
+    t0 = time.time(); checks = []; notes = []
+    def check(name, ok, why=""):
+        checks.append((name, bool(ok)))
+        if not ok: notes.append("%s %s" % (name, why))
+    native = morph.packages("Native")
+    a = morph.check_animations(native); m = morph.check_meshes(native, limit=limit or None, per_package=1)
+    ok = a["animations"] > 0 and a["identical"] == a["animations"] and m["decoded"] > 0 and m["identical"] == m["decoded"] and not m["failures"] and not a["failures"]
+    notes += ["animations %s" % (a["failures"],)] * bool(a["failures"]) + ["meshes %s" % (m["failures"],)] * bool(m["failures"])
+    try:
+        # made-up edit data with three key frames: packs, parses, re-packs
+        n, v = 4, 4; rng = np.random.RandomState(3)
+        s = dict(P=rng.rand(n, 3), pi=np.arange(v, dtype="<u4"), N=rng.rand(v, 3), T=rng.rand(v, 3), B=rng.rand(v, 3), uv0=rng.rand(v, 2), uv1=rng.rand(v, 2), c0=np.zeros(v, "<u4"), F=np.array([[0, 1, 2], [1, 2, 3]], "<u4"), W=None)
+        plain = sdk_mesh.edit_blob(s); E = sdk_mesh.parse_edit(plain)
+        keys = [morph.morph_key(E, t, rng.rand(n, 3) * 0.01) for t in (0, 1, 2)]
+        E3 = morph.with_frames(E, keys); blob = sdk_mesh.pack_edit(E3); back = sdk_mesh.parse_edit(blob)
+        check("made-up mesh with 3 key frames re-packs", sdk_mesh.pack_edit(back) == blob and [float(f["time"]) for f in back["frames"]] == [0, 1, 2]
+              and len(blob) == len(plain) + 4 * 3 + 3 * (8 + 16 * (n + v)) and sdk_mesh.pack_edit(E) == plain)
+        check("a key frame of the wrong size is refused", _raises(morph.with_frames, E, [dict(time=0, P=np.zeros((n + 1, 4)), N=np.zeros((v, 4)))]))
+        # a made-up pose written to a package and read back
+        root = os.path.join(config.SDK_STAGE_DIR, "_selftest", "morph"); os.makedirs(root, exist_ok=True)
+        an = morph.pose("selftest_pose", {0: {62: 0.5}, 4: {62: 0.2, 65: 1.0}}, source=bytes(range(16)))
+        out = morph.write_package(an, root, force=True); r = morph.check_animations([out])
+        check("made-up morph animation written and read back", r["animations"] == 1 and r["identical"] == 1 and r["frames"] == 2 and r["targets"] == 3, r)
+        # a mesh package with key frames written by sdk_mesh and read back (edit data and vertex stream)
+        import contextlib, io
+        sm = dict(name="selftest_morph", material="selftest_mat", P=rng.rand(n, 3), pi=np.arange(v, dtype="<u4"), N=np.tile([0, 0, 1.0], (v, 1)), T=np.tile([1.0, 0, 0], (v, 1)), B=np.tile([0, 1.0, 0], (v, 1)),
+                  uv0=rng.rand(v, 2), uv1=rng.rand(v, 2), c0=np.zeros(v, "<u4"), F=np.array([[0, 1, 2], [1, 2, 3]], "<u4"), W=None, nbones=0)
+        E0 = sdk_mesh.parse_edit(sdk_mesh.edit_blob(sm)); sm["frames"] = [morph.morph_key(E0, t, {0: (0, 0, 0.05 * t)}) for t in (0, 1, 2)]
+        with contextlib.redirect_stdout(io.StringIO()): mp, rp, info = sdk_mesh.write_metamesh("selftest_morph", "selftest_morph", [sm], b"", root, root, force=True)
+        back = sdk_mesh.read_mesh(mp, root); mr = morph.check_meshes([mp])
+        check("mesh package with 3 key frames written by sdk_mesh and read back", len(back) == 1 and len(back[0][1]["frames"]) == 3 and back[0][2] is not None and mr["decoded"] == 1 and mr["identical"] == 1
+              and mr["special"] == 1 and abs(back[0][1]["frames"][2]["P"][0, 2] - E0["P"][0, 2] - 0.1) < 1e-6, mr)
+        # the deform key names come from the game's skins.xml and the real head carries a key per name
+        dk = morph.deform_keys(); names = {k[0]: k[1] for k in dk.get("head_male_a", [])}
+        check("deform keys of head_male_a named by skins.xml", names.get(1) == "face_width" and len(names) > 50, len(names))
+        import meshread, mmap
+        rel = meshread.index().get("head_male_a"); got = None
+        with open(os.path.join(config.MODULES, rel), "rb") as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                for res in meshread.resources(mm):
+                    if res["type"] == sdk_mesh.META_TYPE and res["name"] == "head_male_a":
+                        for off, raw, st, owner, ty in res["entries"]:
+                            if ty == sdk_mesh.EDIT_DATA and raw > 4000000: got = sdk_mesh.parse_edit(tpac.lz4_decompress(bytes(mm[off:off + st]), raw))
+            finally:
+                mm.close()
+        check("the real head has 101 key frames, frame 0 is the basis", got is not None and len(got["frames"]) == 101 and np.array_equal(got["frames"][0]["P"], got["P"])
+              and [float(f["time"]) for f in got["frames"]][:3] == [0.0, 1.0, 2.0])
+    except Exception:
+        import traceback
+        notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
+    good = sum(1 for _, x in checks if x)
+    report("morph", ok and good == len(checks) and checks != [], "%d Native morph animations (%d frames, %d targets) re-encode byte-identical %d; %d mesh edit data entries checked (%d with key frames or masks of %d seen in Native), "
+           "byte-identical %d of %d; %d of %d made-up checks (%s) (%.0f s)" % (a["animations"], a["frames"], a["targets"], a["identical"], m["decoded"], m["special"], m["entries"], m["identical"], m["decoded"],
+           good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
+
+
+def section_cloth(limit):
+    t0 = time.time(); checks = []; notes = []
+    def check(name, ok, why=""):
+        checks.append((name, bool(ok)))
+        if not ok: notes.append("%s %s" % (name, why))
+    r = cloth.check(cloth.packages("Native"), limit=limit)
+    ok = r["maps"] > 0 and r["cooks"] > 0 and r["maps_identical"] == r["maps"] and r["cooks_identical"] == r["cooks"] and r["clothing_identical"] == r["clothing"]
+    expected = {"map: vertex count", "cook: bounds", "cook: particle count"}         # shipped data that disagrees with its own mesh (named in cloth.py's notes)
+    unexpected = {k: v for k, v in r["failures"].items() if k not in expected}
+    ok = ok and not unexpected; notes += ["unexpected %s" % (unexpected,)] * bool(unexpected)
+    try:
+        rng = np.random.RandomState(5); V = 7
+        mp = dict(index=rng.randint(0, 9, (V, 3)).astype("<u2"), weight=np.c_[rng.dirichlet([1, 1, 1], V), rng.rand(V) * 0.01].astype("<f4"))
+        b = cloth.pack_map(mp); back = cloth.parse_map(b)
+        check("made-up cloth map re-packs", cloth.pack_map(back) == b and len(back["index"]) == V and not cloth.map_problems(back, V, 9))
+        check("cloth map checks catch a bad index and bad weights", "index outside the proxy" in cloth.map_problems(back, V, 5)
+              and "weights do not add up to 1" in cloth.map_problems(dict(index=mp["index"], weight=mp["weight"] * 2), V, 9))
+        c = 6; ck = dict(hash=0x12345678, counts=(c, 5, 3, 2, 4), bounds=np.array([[0, 0, 0, 1], [1, 1, 2, 1]], "<f4"),
+                         arrays=[struct.pack("<I", c) + rng.rand(c).astype("<f4").tobytes(), struct.pack("<I", c) + rng.randint(0, 99, c).astype("<u4").tobytes(), struct.pack("<I", 2) + bytes(8)], tail=bytes(range(40)))
+        kb = cloth.pack_cook(ck); kk = cloth.parse_cook(kb)
+        check("made-up cloth cook re-packs", cloth.pack_cook(kk) == kb and kk["counts"] == ck["counts"])
+        sub = dict(guid=bytes(range(16)), name="selftest_cloth", material="m", material_guid=bytes(16), P=rng.rand(3, 3), pi=np.arange(3, dtype="<u4"), F=np.array([[0, 1, 2]], "<u4"), W=None)
+        rec = sdk_mesh.meta_record(bytes(16), [sub]); sm = tw_formats.parse_metamesh_record(rec)["submeshes"][0]
+        cl = cloth.parse_clothing(sm["params"])
+        check("clothing block of a written mesh record re-packs", cloth.pack_clothing(cl) == sm["params"] and cl["name"] == "" and cl["factor"] == 1.0, cl)
+        cl["gravity"] = 9.81; cl["name"] = "awning"; sm2 = cloth.pack_clothing(cl)
+        check("clothing block with a name and a gravity changed re-parses", cloth.parse_clothing(sm2)["gravity"] == np.float32(9.81) and cloth.parse_clothing(sm2)["name"] == "awning")
+    except Exception:
+        import traceback
+        notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
+    good = sum(1 for _, x in checks if x)
+    report("cloth", ok and good == len(checks) and checks != [], "%d Native clothing blocks re-pack byte-identical %d; cloth maps %d of %d, cloth cooks %d of %d byte-identical (shipped records that disagree with their mesh: %d); "
+           "%d of %d made-up checks (%s) (%.0f s)" % (r["clothing"], r["clothing_identical"], r["maps_identical"], r["maps"], r["cooks_identical"], r["cooks"], r["map_problems"] + r["cook_problems"],
+           good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
+
+
+def section_particles():
+    t0 = time.time(); checks = []; notes = []
+    def check(name, ok, why=""):
+        checks.append((name, bool(ok)))
+        if not ok: notes.append("%s %s" % (name, why))
+    pk = os.path.join(config.NATIVE, "AssetPackages", "particles.tpac")
+    r = particles.check([pk])
+    ok = r["resources"] > 0 and r["identical"] == r["resources"] and set(r["versions"]) >= {0, 2, 4, 9}
+    notes += ["failures %s" % (r["failures"],)] * bool(r["failures"])
+    try:
+        for v in (0, 1, 2, 3, 4, 5, 7, 8, 9):
+            e = particles.blank_effect(2, v); b = particles.write_effect(e); d = particles.parse_effect(b)
+            check("blank effect of emitter version %d decodes and re-encodes" % v, particles.write_effect(d) == b and len(d["emitters"]) == 2 and len(d["emitters"][0]["pre"]) == 4 * particles.pre_size(v))
+        # a shipped effect copied and changed: written, read back, the changes are there, nothing else moved
+        eff, baked, p = particles.find_effect("very_large_smoke")
+        mat = particles.find_material("prt_shd_fire_1")
+        new = particles.modify(eff, emission_rate=40, size=2, life=3, color=(1, 0.2, 0.1), material=mat, alpha_scale=0.5)
+        root = os.path.join(config.SDK_STAGE_DIR, "_selftest", "particles"); out = particles.write_package(new, "selftest_smoke", baked, root, force=True)
+        res = list(particles.resources(out)); bad = particles.check_resource(res[0]) if len(res) == 1 else ["no resource"]
+        back = particles.parse_effect(next(e["raw"] for e in res[0]["entries"] if e["type"] == particles.EFFECT_DATA)); e0, o0 = back["emitters"][0], eff["emitters"][0]
+        P = particles.named_params(e0); P0 = particles.named_params(o0)
+        check("copied effect written and read back", not bad and len(res) == 1 and res[0]["name"] == "selftest_smoke", bad)
+        check("the changed parameters are what was asked", P["emission_rate"]["base"] == 40 and P["particle_life"]["base"] == 3 and e0["guids"][3] == mat and np.allclose(e0["colors"][:, 1:4], [1, 0.2, 0.1])
+              and np.allclose(e0["alphas"][:, 1], np.clip(o0["alphas"][:, 1] * 0.5, 0, 1)) and abs(particles.particle_size(e0)[0] - 2 * particles.particle_size(o0)[0]) < 1e-6)
+        check("nothing else moved", P["damping"]["base"] == P0["damping"]["base"] and P["damping"]["bias"] == P0["damping"]["bias"] and e0["flags"] == o0["flags"] and e0["pre"] == o0["pre"] and e0["decals"] == o0["decals"]
+              and e0["guids"][:3] == o0["guids"][:3] and particles.write_effect(particles.modify(eff)) == particles.write_effect(eff))
+        check("the baked table is carried over", (baked is None) == all(e["type"] != particles.BAKED for e in res[0]["entries"]) and all(e["raw"] == baked for e in res[0]["entries"] if e["type"] == particles.BAKED))
+    except Exception:
+        import traceback
+        notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
+    good = sum(1 for _, x in checks if x)
+    report("particles", ok and good == len(checks) and checks != [], "%d particle resources of Native's particles.tpac (%s) with %d emitters of versions %s re-encode byte-identical %d; %d of %d made-up and copy checks (%s) (%.0f s)"
+           % (r["resources"], ", ".join("%d %s" % (v[0], k) for k, v in sorted(r["by_type"].items())), r["emitters"], ",".join(str(v) for v in sorted(r["versions"])), r["identical"],
+              good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
+
+
 # --------------------------------------------------------------------------------------------------------------- synthetic
 def _quat(axis, ang):
     a = np.asarray(axis, float); a /= np.linalg.norm(a)
@@ -505,6 +652,10 @@ def main(argv):
     if "caches" not in skip: section_caches(int(opt("--caches", 300)))
     if "skeletons" not in skip: section_skeletons()
     if "physics" not in skip: section_physics(int(opt("--physics", 8)))
+    if "survey" not in skip: section_survey()
+    if "morph" not in skip: section_morph(int(opt("--morph", 0)))
+    if "cloth" not in skip: section_cloth(int(opt("--cloth", 400)))
+    if "particles" not in skip: section_particles()
     if "synthetic" not in skip: section_synthetic()
     bad = [n for n, ok in RESULTS if not ok]
     print("\nSUMMARY: %d PASS, %d FAIL%s" % (len(RESULTS) - len(bad), len(bad), (" (" + ", ".join(bad) + ")") if bad else ""))

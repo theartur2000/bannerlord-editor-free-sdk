@@ -269,23 +269,37 @@ def edit_blob(s):
     V["pi"] = s["pi"]; V["n"] = np.c_[s["N"], one]; V["t"] = np.c_[s["T"], one]; V["b"] = np.c_[s["B"], one]; V["n2"] = V["n"]
     V["uv0"] = s["uv0"]; V["uv1"] = s["uv1"]; V["c0"] = s["c0"]; V["c1"] = 0xffffffff
     W = s["W"] if s["W"] is not None else np.zeros(0, WEIGHT)
-    return struct.pack("<I", n) + P.tobytes() + struct.pack("<II", 0, len(V)) + V.tobytes() + struct.pack("<I", len(s["F"])) \
-        + np.asarray(s["F"], "<u4").tobytes() + struct.pack("<II", 0, len(W)) + W.tobytes() + struct.pack("<I", 0)
+    return pack_edit(dict(P=P, V=V, F=np.asarray(s["F"], "<u4"), W=W, frames=s.get("frames") or []))
 
 def pack_edit(E):
-    """Re-pack parsed edit data (parse_edit) as is."""
-    return struct.pack("<I", len(E["P"])) + np.asarray(E["P"], "<f4").tobytes() + struct.pack("<II", 0, len(E["V"])) + E["V"].tobytes()         + struct.pack("<I", len(E["F"])) + np.asarray(E["F"], "<u4").tobytes() + struct.pack("<II", 0, len(E["W"])) + E["W"].tobytes() + struct.pack("<I", 0)
+    """Re-pack parsed edit data (parse_edit) as is, morph frames included."""
+    fr = E.get("frames") or []; U = E.get("U"); masks = E.get("masks")
+    out = struct.pack("<I", len(E["P"])) + np.asarray(E["P"], "<f4").tobytes() + struct.pack("<I", 0 if U is None else len(U)) + (b"" if U is None else np.asarray(U, "<f4").tobytes())
+    out += struct.pack("<I", len(E["V"])) + E["V"].tobytes() + struct.pack("<I", len(E["F"])) + np.asarray(E["F"], "<u4").tobytes() + struct.pack("<I", len(fr))
+    out += b"".join(struct.pack("<f", f["time"]) for f in fr)
+    for f in fr: out += struct.pack("<I", len(f["P"])) + np.asarray(f["P"], "<f4").tobytes() + struct.pack("<I", len(f["N"])) + np.asarray(f["N"], "<f4").tobytes()
+    out += struct.pack("<I", len(E["W"])) + E["W"].tobytes()
+    return out + struct.pack("<I", 0 if masks is None else len(masks)) + (b"" if masks is None else np.asarray(masks, "<i4").tobytes())
 
 def parse_edit(d):
+    """Edit data: positions P (n, 4), unused vec4 list U (empty in every game mesh), vertices V, triangles F, morph frames (a list of
+    dict(time (float: the key time, 0 for the basis, 1.0 for the first morph target ...), P (absolute positions, 4), N (normals, 4)): the keys of a face, one per morph target, or the single vertex key of a cloth mesh),
+    skin weights W, face smoothing masks (empty in every game mesh). Raises when the bytes do not fit the layout."""
     n = struct.unpack_from("<I", d, 0)[0]; P = np.frombuffer(d, "<f4", 4 * n, 4).reshape(n, 4); o = 4 + 16 * n
-    z0, m = struct.unpack_from("<II", d, o); o += 8
+    nu, = struct.unpack_from("<I", d, o); o += 4; U = np.frombuffer(d, "<f4", 4 * nu, o).reshape(nu, 4); o += 16 * nu
+    m, = struct.unpack_from("<I", d, o); o += 4
     V = np.frombuffer(d, VERT, m, o); o += VERT.itemsize * m
     k = struct.unpack_from("<I", d, o)[0]; F = np.frombuffer(d, "<u4", 3 * k, o + 4).reshape(k, 3); o += 4 + 12 * k
-    z1, w = struct.unpack_from("<II", d, o); o += 8
+    nf, = struct.unpack_from("<I", d, o); o += 4; times = struct.unpack_from("<%df" % nf, d, o); o += 4 * nf; frames = []
+    for t in times:
+        a, = struct.unpack_from("<I", d, o); fp = np.frombuffer(d, "<f4", 4 * a, o + 4).reshape(a, 4); o += 4 + 16 * a
+        b, = struct.unpack_from("<I", d, o); fn = np.frombuffer(d, "<f4", 4 * b, o + 4).reshape(b, 4); o += 4 + 16 * b
+        frames.append(dict(time=t, P=fp, N=fn))
+    w, = struct.unpack_from("<I", d, o); o += 4
     W = np.frombuffer(d, WEIGHT, w, o); o += WEIGHT.itemsize * w
-    z2 = struct.unpack_from("<I", d, o)[0]; o += 4
-    if (z0, z1, z2) != (0, 0, 0) or o != len(d): raise ValueError("edit data layout differs")
-    return dict(P=P, V=V, F=F, W=W)
+    z2 = struct.unpack_from("<I", d, o)[0]; o += 4; masks = np.frombuffer(d, "<i4", z2, o); o += 4 * z2
+    if o != len(d): raise ValueError("edit data layout differs")
+    return dict(P=P, V=V, F=F, W=W, U=U, frames=frames, masks=masks)
 
 # ---- vertex stream ----
 def forsyth(F, nv, cache=32):
