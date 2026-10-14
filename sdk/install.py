@@ -299,8 +299,9 @@ def main(argv=None):
     s, A, R = stage_dirs(stage)
     if cmd == "texture":
         if opt("--format") and opt("--format") not in tpac.TEX_FORMATS: sys.exit("format: " + "|".join(tpac.TEX_FORMATS))
+        if opt("--quality") and opt("--quality") not in tpac.BC_QUALITIES: sys.exit("quality: " + "|".join(tpac.BC_QUALITIES))
         out, rp, r = tpac.write_texture(a[1], opt("--name"), opt("--format"), opt("--usage"), "--no-mips" not in a,
-                                        opt("--flags").split(",") if opt("--flags") else (), force, A, R)
+                                        opt("--flags").split(",") if opt("--flags") else (), force, A, R, quality=opt("--quality"))
         print("staged", out, "+", os.path.basename(rp), "(%s, %dx%d, usage %s)" % (r["format"], r["w"], r["h"], r["usage"]))
     elif cmd == "material":
         tex = {k: opt("--" + k) for k in tpac.SLOTS if opt("--" + k)}

@@ -59,6 +59,76 @@ def png_codec_round_trip():
         b = terrain.png_decode(terrain.png_encode(a)); assert b.dtype == a.dtype and np.array_equal(a, b)
 
 
+def _bc_test_blocks(n, alpha, seed):
+    """n 4x4 RGBA blocks (8 bit values) that suit different modes: a colour line, two colour regions split by an edge, noise."""
+    r = np.random.default_rng(seed); t = r.random((n, 16, 1)); a, b, c = (r.random((n, 1, 4)) * 255 for _ in range(3))
+    x = a + (b - a) * t
+    split = np.broadcast_to((np.arange(16) % 4 < 2)[None, :, None], (n, 16, 1)) & (np.arange(n) % 3 == 1)[:, None, None]
+    x = np.where(split, c + (r.random((n, 16, 4)) - 0.5) * 24, x)
+    x[:n // 6] = r.random((n // 6, 16, 4)) * 255
+    x = np.rint(np.clip(x, 0, 255)).astype(np.float32)
+    if not alpha: x[..., 3] = 255
+    return x
+
+
+@test
+def bc7_encoder_modes_decode_to_what_they_report():
+    import texcodec
+    for mode, alpha in ((0, False), (1, False), (2, False), (3, False), (4, True), (5, True), (6, True), (7, True)):
+        x = _bc_test_blocks(120, alpha, mode)
+        blk, err = texcodec._bc7_rotated(x, mode, 1) if mode in (4, 5) else texcodec._bc7_subsets(x, mode, 1, k=2)
+        dec = texcodec.decode_bc7(blk).astype(np.float64)
+        first = blk[:, 0].astype(int); got = np.array([next(k for k in range(8) if f >> k & 1) for f in first])
+        assert (got == mode).all(), (mode, np.bincount(got))
+        real = ((dec - x) ** 2).sum((1, 2))
+        assert np.abs(real - err).max() < 0.5, (mode, np.abs(real - err).max())   # the error the encoder minimised is the error the decoder shows
+        assert (np.sqrt(real.mean() / 64) < 40), (mode, real.mean())
+
+
+@test
+def bc7_qualities_never_lose_to_fast_and_pick_modes():
+    import texcodec, tpac
+    h, w = 64, 64; y, xx = np.mgrid[0:h, 0:w]; r = np.random.default_rng(3)
+    img = np.zeros((h, w, 4), np.uint8); img[..., 0] = xx * 4; img[..., 1] = y * 4; img[..., 2] = (xx ^ y) * 4 % 256; img[..., 3] = 255
+    img[:32, 32:, :3] = (200, 40, 90); img[:32, 32:, 3] = np.clip(xx[:32, 32:] * 8 % 256, 0, 255)   # a ramp of alpha over a flat colour
+    img[..., :3] = np.clip(img[..., :3].astype(int) + r.integers(-4, 5, (h, w, 3)), 0, 255)
+    psnr = {}; used = {}
+    for q in ("fast", "normal", "best"):
+        enc = tpac.encode_mip(img, "BC7", q); assert len(enc) == 16 * 16 * 16
+        d = tpac.decode_blocks(enc, w, h, "BC7").astype(np.float64); mse = ((d - img) ** 2).mean(); psnr[q] = 10 * np.log10(255 ** 2 / mse)
+        used[q] = {k for k in range(8) if ((np.frombuffer(enc, np.uint8).reshape(-1, 16)[:, 0] & (0xFF >> (7 - k))) == 1 << k).any()}
+    assert psnr["normal"] > psnr["fast"] + 0.5 and psnr["best"] >= psnr["normal"], psnr
+    assert used["fast"] == {6} and len(used["normal"]) >= 3 and len(used["best"]) >= 5, used   # fast: mode 6 only; the others pick per block
+
+
+@test
+def bc6h_encoder_modes_decode_to_what_they_report():
+    import texcodec
+    r = np.random.default_rng(5); n = 90
+    for m in range(14):
+        t = r.random((n, 16, 1)); a, b = np.exp(r.normal(-1, 1.2, (n, 1, 3))), np.exp(r.normal(-1, 1.2, (n, 1, 3)))
+        x = a + (b - a) * t
+        x[n // 3:2 * n // 3] = a[n // 3:2 * n // 3] * (1 + 0.02 * r.standard_normal((n // 3, 16, 3)))   # nearly flat blocks: the delta modes can hold these
+        x, tt = texcodec._bc6h_domain(x.astype(np.float32))
+        blk, err = texcodec._bc6h_candidates(x, tt, m, 1, k=2)
+        assert (texcodec.bc6h_modes(blk) == m + 1).all(), (m, np.bincount(texcodec.bc6h_modes(blk)))
+        real = ((np.sqrt(texcodec.decode_bc6h(blk).astype(np.float64)) - np.sqrt(x)) ** 2).sum((1, 2))
+        assert (np.abs(real - err) <= 1e-3 * real + 1e-6).all(), (m, np.abs(real - err).max())   # a delta out of its field would show here
+
+
+@test
+def bc6h_qualities_never_lose_to_fast():
+    import tpac
+    h, w = 64, 64; y, x = np.mgrid[0:h, 0:w]; r = np.random.default_rng(6)
+    sky = np.zeros((h, w, 4), np.float32); sky[..., 0] = 0.2 + y / h; sky[..., 1] = 0.4 + 0.5 * y / h; sky[..., 2] = 1.2 - 0.3 * x / w; sky[..., 3] = 1
+    sky[..., :3] *= 1 + 0.01 * r.standard_normal((h, w, 3)); sky[40:50, 20:30, :3] *= 30
+    psnr = {}
+    for q in ("fast", "normal", "best"):
+        enc = tpac.encode_mip(sky, "BC6H_UF16", q); d = tpac.decode_float(enc, w, h, "BC6H_UF16")[..., :3]
+        ref = sky[..., :3]; mse = ((d / (1 + d) - ref / (1 + ref)) ** 2).mean(); psnr[q] = 10 * np.log10(1 / mse)
+    assert psnr["normal"] > psnr["fast"] + 0.3 and psnr["best"] >= psnr["normal"] - 0.01, psnr
+
+
 @test
 def terrain_nodes_split_and_join():
     import terrain

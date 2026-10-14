@@ -144,6 +144,7 @@ def section_textures(per_format):
             elif px[0]["raw"] > SAMPLE_MAX: skipped["over %d MB" % (SAMPLE_MAX // 1_000_000)][fmt] += 1
             else: cands[fmt].append((p, it, r, px[0]))
     stats = collections.Counter(); psnr = collections.defaultdict(list); notes = []; modes = collections.defaultdict(collections.Counter)
+    qpsnr = collections.defaultdict(list)   # (format, quality) -> PSNR of a 128 x 128 crop encoded at that quality
     for fmt, lst in sorted(cands.items()):
         random.Random(7).shuffle(lst)
         for p, it, r, px in lst[:per_format]:
@@ -183,6 +184,11 @@ def section_textures(per_format):
                         c = img[:min(h, 512) // 4 * 4 or h, :min(w, 512) // 4 * 4 or w]; ch_, cw_ = c.shape[:2]
                         ps = _psnr(c, tpac.decode_blocks(tpac.encode_mip(c, fmt), cw_, ch_, fmt), ch)
                 psnr[fmt].append(ps); stats["decoded"] += 1
+                if fmt in ("BC7", "BC6H_UF16"):   # the same crop at every quality: the multi mode encoders must not lose to the one mode one
+                    qc = img[:min(h, 128) // 4 * 4 or h, :min(w, 128) // 4 * 4 or w]; qh, qw = qc.shape[:2]
+                    for q in tpac.BC_QUALITIES:
+                        e = tpac.encode_mip(qc, fmt, q)
+                        qpsnr[fmt, q].append(_psnr(qc, tpac.decode_blocks(e, qw, qh, fmt), ch) if fmt == "BC7" else _psnr_f(qc, tpac.decode_float(e, qw, qh, fmt), ch))
                 if fmt in LOSSLESS:
                     stats["lossless"] += 1
                     if enc == top: stats["lossless exact"] += 1
@@ -199,20 +205,24 @@ def section_textures(per_format):
     bound = {"DXT1": 30, "DXT3": 28, "DXT5": 28, "BC4": 38, "BC5": 34, "BC6H_UF16": 25, "BC7": 25, "R8G8B8A8_UNORM": 90, "R8_UNORM": 90, "R16_UNORM": 90,
              "R16G16F": 90, "R16G16B16A16F": 90}
     low = [(f, round(min(v), 1)) for f, v in psnr.items() if min(v) < bound.get(f, 25)]
+    # per texture: normal not worse than fast, best not worse than normal (0.1 dB of slack)
+    worse = [(f, i, round(a, 1), round(b, 1)) for f in ("BC7", "BC6H_UF16") for lo, hi in (("fast", "normal"), ("normal", "best"))
+             for i, (a, b) in enumerate(zip(qpsnr[f, lo], qpsnr[f, hi])) if b < a - 0.1]
     # the pixel hash is the engine's rule for textures the editor imported; a Native texture whose pixels were touched after
     # import keeps its old hash, so most (not all) must match
     ok = (stats["textures"] > 0 and stats["record identical"] == stats["textures"] and stats["pixel hash"] >= 0.8 * stats["pixel hash tested"]
-          and stats["size"] == stats["textures"] and stats["settings identical"] == stats["settings seen"] and not low and stats["decoded"] == stats["textures"]
+          and stats["size"] == stats["textures"] and stats["settings identical"] == stats["settings seen"] and not low and not worse and stats["decoded"] == stats["textures"]
           and stats["lossless exact"] == stats["lossless"] and stats["cube layout face-major"] == stats["cube"] and not stats["non-finite values"]
           and not skipped.get("record layout not read") and not skipped.get("format not supported") and set(cands) == supported & set(total))
     per = ", ".join("%s %s (%d)" % (f, "exact" if min(v) >= 99 else "min %.1f dB" % min(v), len(v)) for f, v in sorted(psnr.items()))
     skip = "; ".join("%s: %s" % (why, ", ".join("%s %d" % kv for kv in sorted(c.items()))) for why, c in sorted(skipped.items())) or "none"
+    gain = ", ".join("%s %s" % (f, " / ".join("%.1f" % float(np.median(qpsnr[f, q])) for q in tpac.BC_QUALITIES)) for f in ("BC7", "BC6H_UF16") if qpsnr[f, "fast"])
     seen = "; ".join("%s modes seen %d of %d" % (f, len(m), 8 if f == "BC7" else 14) for f, m in sorted(modes.items()))
-    report("textures", ok, "%d Native textures (%s): record re-pack identical %d, pixel hash rule %d of %d, size rule %d, import settings %d/%d, cubemap layout %d/%d; re-encode PSNR: %s; %s; not tested (%d of %d textures): %s (%.0f s)"
+    report("textures", ok, "%d Native textures (%s): record re-pack identical %d, pixel hash rule %d of %d, size rule %d, import settings %d/%d, cubemap layout %d/%d; re-encode PSNR: %s; median PSNR of 128 x 128 crops by quality (fast / normal / best): %s; %s; not tested (%d of %d textures): %s (%.0f s)"
            % (stats["textures"], ", ".join("%s %d" % (f, stats["tex " + f]) for f in sorted(cands)), stats["record identical"], stats["pixel hash"], stats["pixel hash tested"], stats["size"],
-              stats["settings identical"], stats["settings seen"], stats["cube layout face-major"], stats["cube"], per or "none decoded", seen or "no mode counts",
+              stats["settings identical"], stats["settings seen"], stats["cube layout face-major"], stats["cube"], per or "none decoded", gain or "none", seen or "no mode counts",
               sum(sum(c.values()) for c in skipped.values()), sum(total.values()), skip, time.time() - t0),
-           notes + ["below bound: %s" % low] * bool(low))
+           notes + ["below bound: %s" % low] * bool(low) + ["a higher quality lost to a lower one (format, texture, dB): %s" % worse] * bool(worse))
 
 
 # --------------------------------------------------------------------------------------------------------------------- codecs
@@ -243,6 +253,14 @@ PINS = {"bc7": "79818c0fab7c23ffa037568681b1a13452d5fe3e0c06103a2156432094921e90
         "dxt3": "6ff30251b0de3694b8bab98df491c47eeb66f3108049be5d781c52ad2a7aa01d"}
 
 
+# SHA-256 of what the one mode encoders (quality "fast") write for the synthetic pictures of section_codecs; they are the encoders every
+# earlier version of the SDK used, so a later edit must not change a byte of them
+ENC_PINS = {"bc7": "6967fb3f9c90f49031f8ceba650c970f5b38046eb066daa3a65a95e940e1a605",
+            "bc6h": "dd027f9ba06bb328c91ed50fe2c5b2a460ab470c7f5972ea636e1bd326102d3a"}
+# PSNR floors (dB) of the encoders by quality on the synthetic picture of section_codecs, a little under what they measured
+QUALITY_FLOOR = {("bc7", "fast"): 38, ("bc7", "normal"): 41, ("bc7", "best"): 41, ("bc6h", "fast"): 36, ("bc6h", "normal"): 37, ("bc6h", "best"): 37}
+
+
 def section_codecs():
     import texcodec
     t0 = time.time(); checks = []; notes = []
@@ -265,6 +283,8 @@ def section_codecs():
     floor = {"bc1": 30, "bc2": 30, "bc3": 30, "bc4": 40, "bc5": 40, "bc6h": 30, "bc7": 30, "rgba8": 99, "r8": 99, "r16": 99, "rg16f": 99, "rgba16f": 99}
     chan = {"bc1": [0, 1, 2], "bc2": [0, 1, 2, 3], "bc3": [0, 1, 2, 3], "bc4": [0], "bc5": [0, 1], "bc6h": [0, 1, 2], "bc7": [0, 1, 2, 3], "rgba8": [0, 1, 2, 3],
             "r8": [0], "r16": [0], "rg16f": [0, 1], "rgba16f": [0, 1, 2, 3]}
+    hdr4 = np.concatenate([(np.exp(np.random.RandomState(2).normal(-1, 1, (64, 64, 1))) * np.linspace(0.1, 4, 64)[None, :, None] * np.ones((1, 1, 3))).astype(np.float32),
+                           np.ones((64, 64, 1), np.float32)], 2)
     res = {}
     for key, (efmt, _) in tpac.TEX_FORMATS.items():
         try:
@@ -277,15 +297,36 @@ def section_codecs():
             check("%s PSNR >= %d" % (key, floor[key]), res[key] >= floor[key], "PSNR %.1f" % res[key])
         except Exception as ex:
             check("%s write" % key, False, repr(ex))
-    # the one-mode BC6H encoder on a high dynamic range picture: it decodes, stays near the input, and writes mode 11 only
-    hdr = (np.exp(np.random.RandomState(2).normal(-1, 1, (64, 64, 1))) * np.linspace(0.1, 4, 64)[None, :, None] * np.ones((1, 1, 3))).astype(np.float32)
-    e = tpac.encode_mip(np.concatenate([hdr, np.ones((64, 64, 1), np.float32)], 2), "BC6H_UF16"); dec = tpac.decode_float(e, 64, 64, "BC6H_UF16")[..., :3]
-    rel = float(np.median(np.abs(dec - hdr) / np.maximum(hdr, 1e-3)))
-    check("BC6H HDR picture decodes finite, median relative error %.3f < 0.15" % rel, np.isfinite(dec).all() and rel < 0.15)
-    check("BC6H encoder writes mode 11 only", set(texcodec.bc6h_modes(np.frombuffer(e, np.uint8).reshape(-1, 16)).tolist()) == {11})
+    # the encoders that try several modes per block (quality normal and best) against the one mode encoders ("fast", unchanged: pinned),
+    # written through the texture writer from the same synthetic picture and read back
+    for k, v in ENC_PINS.items():
+        fmt = "BC7" if k == "bc7" else "BC6H_UF16"; pic = img if k == "bc7" else hdr4
+        check("%s fast encoder output unchanged" % k, hashlib.sha256(tpac.encode_mip(pic, fmt, "fast")).hexdigest() == v)
+    qual = {}
+    for key in ("bc7", "bc6h"):
+        for q in tpac.BC_QUALITIES:
+            try:
+                tp, rp, r = tpac.write_texture(png, "codec%s_%s" % (key, q), key, out_dir=A, rdc_dir=R, quality=q)
+                r2, pix = tpac.tex_pixels(tp, R); qual[key, q] = _psnr(img, tpac.decode_mip(r2, pix, 0), chan[key])
+                check("%s %s written and read back" % (key, q), r2["hash_ok"] and tw_formats.texture_pixel_hash(pix) == r2["unk8"] and len(pix) == tpac.tex_bytes(r2))
+                check("%s %s PSNR >= %.1f" % (key, q, QUALITY_FLOOR[key, q]), qual[key, q] >= QUALITY_FLOOR[key, q], "PSNR %.2f" % qual[key, q])
+            except Exception as ex:
+                check("%s %s write" % (key, q), False, repr(ex))
+        if all((key, q) in qual for q in tpac.BC_QUALITIES):
+            check("%s: normal beats fast, best does not lose to normal (%.1f, %.1f, %.1f dB)" % (key, *(qual[key, q] for q in tpac.BC_QUALITIES)),
+                  qual[key, "normal"] > qual[key, "fast"] and qual[key, "best"] >= qual[key, "normal"] - 0.01)
+    # the BC6H encoders on a high dynamic range picture: they decode, stay near the input, and fast writes mode 11 only
+    hdr = hdr4[..., :3]; modes = {}
+    for q in tpac.BC_QUALITIES:
+        e = tpac.encode_mip(hdr4, "BC6H_UF16", q); dec = tpac.decode_float(e, 64, 64, "BC6H_UF16")[..., :3]
+        rel = float(np.median(np.abs(dec - hdr) / np.maximum(hdr, 1e-3))); modes[q] = set(texcodec.bc6h_modes(np.frombuffer(e, np.uint8).reshape(-1, 16)).tolist())
+        check("BC6H %s HDR picture decodes finite, median relative error %.3f < 0.15" % (q, rel), np.isfinite(dec).all() and rel < 0.15)
+    check("BC6H fast encoder writes mode 11 only", modes["fast"] == {11})
+    check("BC6H normal and best write several modes (%s, %s)" % (sorted(modes["normal"]), sorted(modes["best"])), len(modes["normal"]) >= 2 and len(modes["best"]) >= 2)
     good = sum(1 for _, ok in checks if ok)
-    report("codecs", good == len(checks) and checks != [], "%d of %d checks (%s); PSNR of the formats written from a synthetic picture: %s (%.0f s)" % (
-        good, len(checks), ", ".join(n for n, ok in checks if not ok) or "all passed", ", ".join("%s %.1f" % kv for kv in res.items()), time.time() - t0), notes)
+    report("codecs", good == len(checks) and checks != [], "%d of %d checks (%s); PSNR of the formats written from a synthetic picture: %s; BC7 and BC6H by quality (fast / normal / best): %s (%.0f s)" % (
+        good, len(checks), ", ".join(n for n, ok in checks if not ok) or "all passed", ", ".join("%s %.1f" % kv for kv in res.items()),
+        ", ".join("%s %s" % (k, " / ".join("%.1f" % qual[k, q] for q in tpac.BC_QUALITIES if (k, q) in qual)) for k in ("bc7", "bc6h")), time.time() - t0), notes)
 
 
 # ------------------------------------------------------------------------------------------------------------------ caches

@@ -872,10 +872,14 @@ def enc_bc7(x):
         pos += nb
     return np.concatenate([lo.astype("<u8").view(np.uint8).reshape(n, 8), hi.astype("<u8").view(np.uint8).reshape(n, 8)], 1)
 
-def encode_mip(img, fmt):
+BC_QUALITIES = ("fast", "normal", "best")
+DEFAULT_QUALITY = "normal"   # the BC7 and BC6H encoders: "fast" = one mode per block (the former default), "best" = slowest
+
+def encode_mip(img, fmt, quality=None):
     """img (h, w, 4) -> bytes in the engine format (DXT1, DXT3, DXT5, BC4, BC5, BC6H_UF16, BC7, R8G8B8A8_UNORM, R8_UNORM, R16_UNORM, R16G16F,
     R16G16B16A16F). img is uint8 RGBA (the float formats read it as 0..1) or float RGBA, where 1.0 is white and the float formats keep
-    values above 1; the 8 bit formats clamp a float image to 0..1. BC6H is written in mode 11 only."""
+    values above 1; the 8 bit formats clamp a float image to 0..1. quality (BC7, BC6H): "fast" = one mode (BC7 mode 6, BC6H mode 11),
+    "normal" and "best" try several modes per block (texcodec.enc_bc7_multi, enc_bc6h_multi); None = DEFAULT_QUALITY."""
     import numpy as np
     if np.issubdtype(np.asarray(img).dtype, np.floating):
         if fmt == "R16_UNORM": return np.rint(np.clip(img[..., 0], 0, 1) * 65535).astype("<u2").tobytes()
@@ -896,19 +900,26 @@ def encode_mip(img, fmt):
     elif fmt == "BC5": out = np.concatenate([enc_bc4(x[:, :, 0]), enc_bc4(x[:, :, 1])], 1)
     elif fmt == "BC6H_UF16":
         import texcodec
-        out = texcodec.enc_bc6h(x[:, :, :3])
-    elif fmt == "BC7": out = enc_bc7(x)
+        quality = quality or DEFAULT_QUALITY
+        out = texcodec.enc_bc6h(x[:, :, :3]) if quality == "fast" else texcodec.enc_bc6h_multi(x[:, :, :3], quality)
+    elif fmt == "BC7":
+        quality = quality or DEFAULT_QUALITY
+        if quality == "fast": out = enc_bc7(x)
+        else:
+            import texcodec
+            out = texcodec.enc_bc7_multi(x, quality)
     else: raise ValueError(fmt)
     return out.tobytes()
 
 def write_texture(png, name=None, fmt=None, usage=None, mips=True, flags=(), force=False, out_dir=None, rdc_dir=None,
-                  inline=False, size=None, image=None, tex_flags=None, resource_guid=None):
+                  inline=False, size=None, image=None, tex_flags=None, resource_guid=None, quality=None):
     """Encode a PNG into <name>_tex.tpac (+ RuntimeDataCache/<package guid>.rdc holding the mips, as the editor does;
     with inline=True the mips go into the package as a "Texture pixel data" entry like Native's editor packages).
     A rewrite or a staged copy (out_dir) keeps the ids of the existing package of that name, so its .rdc name holds.
     size = (w, h) resamples the picture; image = RGBA array used as the picture instead of the PNG's pixels (the PNG
     still gives the source path, hash and info); tex_flags overrides the texture flags list (has_alpha, ...).
     resource_guid: use this resource id (a Native texture's, to override it by guid as well as by name).
+    quality: "fast", "normal" or "best" for the BC7 and BC6H encoders (default DEFAULT_QUALITY).
     Returns (tpac path, rdc path or None, fields)."""
     import numpy as np, pngio
     name = name or os.path.splitext(os.path.basename(png))[0]
@@ -929,7 +940,7 @@ def write_texture(png, name=None, fmt=None, usage=None, mips=True, flags=(), for
     chain = []
     for k in range(n_mips):
         m = rgba if k == 0 else pngio.resize(rgba, max(1, w >> k), max(1, h >> k))
-        chain.append(encode_mip(m, efmt))
+        chain.append(encode_mip(m, efmt, quality))
     pix = b"".join(chain)
     assert len(pix) == sum(mip_bytes(max(1, w >> k), max(1, h >> k), efmt) for k in range(n_mips))
     ap = os.path.abspath(png)
@@ -1468,16 +1479,17 @@ def main(argv):
             except FileExistsError as e: print(e); continue
             print("wrote %-44s animation %s, %d keys" % (out, take, nk))
     elif cmd == "texture":   # tpac.py texture <png> [--name N] [--format bc1|bc2|bc3|bc4|bc5|bc6h|bc7|r8|r16|rg16f|rgba16f|rgba8] [--usage U | --srgb |
-        # --linear] [--no-mips] [--flags a,b] [--out DIR] [--rdc DIR] [--inline] [--force]
+        # --linear] [--no-mips] [--flags a,b] [--out DIR] [--rdc DIR] [--inline] [--force] [--quality fast|normal|best]
         a = sys.argv[3:]; opt = lambda k: a[a.index(k) + 1] if k in a else None
         usage = opt("--usage") or ("albedo" if "--srgb" in a else None)
         if "--linear" in a and not usage:   # no colour space field exists: the usage string is the only hint
             sfx = USAGE_BY_SUFFIX.get((opt("--name") or os.path.splitext(os.path.basename(sys.argv[2]))[0]).rsplit("_", 1)[-1])
             usage = sfx if sfx and sfx != "albedo" else "specularmap"
         if opt("--format") and opt("--format") not in TEX_FORMATS: sys.exit("format: " + "|".join(TEX_FORMATS))
+        if opt("--quality") and opt("--quality") not in BC_QUALITIES: sys.exit("quality: " + "|".join(BC_QUALITIES))
         try: out, rp, r = write_texture(sys.argv[2], opt("--name"), opt("--format"), usage, "--no-mips" not in a,
                                         opt("--flags").split(",") if opt("--flags") else (), "--force" in a, opt("--out"),
-                                        opt("--rdc"), "--inline" in a)
+                                        opt("--rdc"), "--inline" in a, quality=opt("--quality"))
         except FileExistsError as e: sys.exit(str(e))
         print("wrote %s%s  (%s, usage %s, package %s)" % (out, "\n  and " + rp if rp else "", r["format"], r["usage"],
                                                           str(uuid.UUID(bytes_le=r["package"])).upper()))

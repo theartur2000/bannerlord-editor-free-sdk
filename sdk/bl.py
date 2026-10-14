@@ -340,9 +340,9 @@ STAGE = P("stage", help="staging folder name", default="work")
 
 @command("asset.texture", "Stages a texture package from a PNG.",
          [P("png", required=True), P("name"), P("format", help="default: bc1 or bc3 by alpha; a name ending in _n becomes bc5, _s bc1, _h bc4"),
-          P("usage"), P("no_mips", "bool"), STAGE, P("force", "bool", "rewrite a staged file")], writes=True)
+          P("usage"), P("quality", help="BC7 and BC6H encoder effort", choices=["fast", "normal", "best"]), P("no_mips", "bool"), STAGE, P("force", "bool", "rewrite a staged file")], writes=True)
 def asset_texture(a):
-    argv = ["texture", a["png"]] + _opts(a, ("name", "format", "usage", "stage")) + (["--no-mips"] if a.get("no_mips") else []) + (["--force"] if a.get("force") else [])
+    argv = ["texture", a["png"]] + _opts(a, ("name", "format", "usage", "quality", "stage")) + (["--no-mips"] if a.get("no_mips") else []) + (["--force"] if a.get("force") else [])
     return _stage_cmd(a, argv)
 
 
