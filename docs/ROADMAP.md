@@ -160,7 +160,7 @@ Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py
 
 | Item | State |
 |---|---|
-| One CLI | done: `sdk/bl.py`, 47 commands, one JSON object per call, `--dry` on everything that writes |
+| One CLI | done: `sdk/bl.py`, 48 commands, one JSON object per call, `--dry` on everything that writes |
 | MCP server | done: `sdk/mcp_server.py`, the same registry over stdio, no dependencies |
 | Bridge module | done and run in game: a file-based command channel (`Bridge.cs` in a scaffolded project, `bl live`): state, ground, ray cast, teleport, look, screenshot, spawn, remove, say, quit |
 | Project layout and `bl new` | done: a scaffolded project builds, deploys, loads, and its test driver runs a battle unattended (verified in game) |

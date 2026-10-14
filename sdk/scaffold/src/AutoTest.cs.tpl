@@ -3,6 +3,7 @@
 // When the environment variable BANNERLORD_AUTOTEST is 1 and Modules/__MOD__/autostart.txt exists, the words in that
 // file are run and the game quits by itself:
 //   menu=<s>     wait that many seconds at the main menu first (time for an outside tool, for example to fill a scene slot)
+//   campaign     a sandbox campaign instead of a Custom Battle (CampaignTest.cs: near=, battle, men=, foes=)
 //   type=<id>    the Custom Battle game type before the map: Battle, Siege, Village (the ids the screen offers)
 //   scene=<id>   the Custom Battle map to fight on (a scene listed in ModuleData/__MODLOWER___custom_battle_scenes.xml)
 //   tod=<hour>   time of day of the battle (the nearest one Custom Battle offers)
@@ -76,6 +77,7 @@ namespace __MOD__
                 string name = top == null ? "null" : top.GetType().Name;
                 if (name != _lastScreen) { Log.Write("screen -> " + name); _lastScreen = name; }
                 if (GameStateManager.Current?.ActiveState is VideoPlaybackState vs) { vs.OnVideoFinished(); Log.Write("video skipped"); }
+                if (Has("campaign")) { if (_stageT > 4f + Int("menu", 0) || !name.Contains("Initial")) CampaignTest.Tick(dt, name); return; }
                 if (_stage == 0 && name.Contains("Initial") && _stageT > 4f + Int("menu", 0))
                 {
                     _stage = 1; _stageT = 0;

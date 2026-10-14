@@ -356,6 +356,22 @@ def bl_ui_sprites_checks_and_stages_nothing_on_a_dry_run():
     assert not bl_run("ui.sprites", os.path.join(TMP, "nothing_here"), "--module", mod, "--dry")["ok"]
 
 
+@test
+def data_patches_are_valid_xslt():
+    import datapatch, scaffold
+    import xml.dom.minidom as minidom
+    d = os.path.join(TMP, "patchproj"); scaffold.create(d, "PatchMod")
+    r = datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X1", {"name": "{=!}A & B <town>", "posX": "10.5"})
+    r = datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X2", {"name": "Other"})
+    r = datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X1", {"posX": None})
+    x = open(r["xslt"], encoding="utf-8").read(); minidom.parseString(x)
+    assert "town_X1" in x and "town_X2" in x and "posX" not in x and "A &amp; B &lt;town&gt;" in x
+    sub = open(os.path.join(d, "SubModule.xml"), encoding="utf-8").read(); minidom.parseString(sub.encode("utf-8"))
+    assert sub.count('path="patchmod_settlements"') == 1
+    datapatch.set_attrs(d, "PatchMod", "Settlements", "Settlement", "town_X3", {"name": "Third"})
+    assert open(os.path.join(d, "SubModule.xml"), encoding="utf-8").read().count('path="patchmod_settlements"') == 1
+
+
 def main():
     failed = []
     for t in TESTS:

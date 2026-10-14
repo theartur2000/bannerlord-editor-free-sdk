@@ -24,6 +24,7 @@
 //                                          bone count and where the last bone is (moves while the clip plays)
 //   bone id= [index=]                      a bone of a spawned prefab's skeleton now (position, up axis, relative to the
 //                                          prefab), and the models on the skeleton and the entity with its bounding box
+//   settlement id=                         a settlement of the running campaign: name, position, culture, owner
 //   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
 //   quit                                   quit the game
@@ -214,6 +215,16 @@ namespace __MOD__
                     r["entity_models"] = Spawned[id].GetComponentCount(GameEntity.ComponentType.MetaMesh);
                     Vec3 lo = Spawned[id].GetBoundingBoxMin(), hi = Spawned[id].GetBoundingBoxMax();
                     r["box_min"] = new[] { lo.x, lo.y, lo.z }; r["box_max"] = new[] { hi.x, hi.y, hi.z };
+                    return r;
+                }
+                case "settlement":
+                {
+                    if (!a.ContainsKey("id")) throw new Exception("settlement needs id=");
+                    if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
+                    var st = TaleWorlds.CampaignSystem.Settlements.Settlement.Find(a["id"]);
+                    if (st == null) throw new Exception("no settlement " + a["id"]);
+                    r["name"] = st.Name.ToString(); Vec2 sp = st.GatePosition.ToVec2(); r["gate_position"] = new[] { sp.x, sp.y };
+                    r["culture"] = st.Culture?.StringId; r["owner_clan"] = st.OwnerClan?.StringId;
                     return r;
                 }
                 case "sprite":

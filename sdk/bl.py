@@ -664,6 +664,25 @@ def prefab_add(a):
             "note": "`bl deploy` copies it; the game reads it at startup"}
 
 
+@command("data.set", "Changes attributes of an object the game (or another module) defines: a settlement, an item, a troop, a kingdom ... as an XSLT patch in the project.",
+         [P("kind", help="the data kind (the root element): Settlements, Items, NPCCharacters, Kingdoms, Clans, Cultures ...", required=True),
+          P("element", help="the object's element: Settlement, Item, NPCCharacter, Kingdom ...", required=True), P("id", help="the object's id", required=True),
+          P("values", "list", help="attribute=value pairs, for example name={=!}New Name (separate several with commas; a value cannot hold a comma)", required=True),
+          P("unset", "bool", help="remove these attributes from the patch instead (values may then be bare names)")], writes=True)
+def data_set(a):
+    import datapatch
+    d, pj = _need_project(); attrs = {}
+    for kv in a["values"]:
+        k, _, v = kv.partition("=")
+        if not k.strip() or (not _ and not a.get("unset")): raise BlError("--values takes attribute=value pairs, got %r" % kv)
+        attrs[k.strip()] = None if a.get("unset") else v
+    if a.get("dry"): return {"would_patch": "%s %s" % (a["element"], a["id"]), "attributes": attrs}
+    try: res = datapatch.set_attrs(d, pj["module"], a["kind"], a["element"], a["id"], attrs)
+    except ValueError as e: raise BlError(str(e))
+    res["note"] = "`bl deploy` copies it; the game applies it when it loads the data, at the start of a campaign or battle"
+    return res
+
+
 @command("scene.register", "Adds a scene to (or removes it from) the project's Custom Battle list, so it can be picked and test-run.",
          [P("scene_id", required=True), P("name", help="the name shown in the list"), P("terrain", default="Plain"),
           P("kind", help="battle, siege (castle or town walls), village, lords_hall", default="battle", choices=("battle", "siege", "village", "lords_hall")), P("remove", "bool")], writes=True)
@@ -828,7 +847,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, sprite, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

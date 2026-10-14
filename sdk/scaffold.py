@@ -72,7 +72,9 @@ CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
     <Reference Include="$(BannerlordDir)\\bin\\Win64_Shipping_Client\\netstandard.dll" Condition="Exists('$(BannerlordDir)\\bin\\Win64_Shipping_Client\\netstandard.dll')">
       <Private>false</Private>
     </Reference>
-    <!-- MissionScreen (the test camera) lives in the View module, CustomGameManager (the test battle) in CustomBattle -->
+    <!-- MissionScreen (the test camera) lives in the View module, CustomGameManager (the test battle) in CustomBattle,
+         SandBoxGameManager (the campaign test) in SandBox -->
+    <Reference Include="$(BannerlordDir)\\Modules\\SandBox\\bin\\Win64_Shipping_Client\\SandBox.dll"><Private>false</Private></Reference>
     <Reference Include="$(BannerlordDir)\\Modules\\Native\\bin\\Win64_Shipping_Client\\TaleWorlds.MountAndBlade.View.dll"><Private>false</Private></Reference>
     <Reference Include="$(BannerlordDir)\\Modules\\CustomBattle\\bin\\Win64_Shipping_Client\\TaleWorlds.MountAndBlade.CustomBattle.dll"><Private>false</Private></Reference>
   </ItemGroup>

@@ -106,6 +106,21 @@ terrain (a road, a ramp, a courtyard floor): give z yourself there, or measure i
 Positions are metres with z up. `--rotation` is in degrees and is applied as Rz . Rx . Ry, so the third number is the
 turn around the vertical.
 
+## Game data
+
+Objects the game or another module defines (settlements, items, troops, kingdoms, clans, cultures) are changed with a
+patch, not by copying their files:
+
+```powershell
+bl data.set Settlements Settlement town_S1 --values "name={=!}New Town"
+bl data.set Items Item imperial_sword_t2 --values "value=500"
+bl run --campaign --words "campaign near=town_S1" --launch       # a campaign, unattended; then
+bl live settlement --values id=town_S1                            # name, position, culture, owner in the running game
+```
+
+`data.set` writes an XSLT next to an empty XML of that kind in the project's ModuleData and registers it in
+SubModule.xml; the game applies it to the merged data when it loads.
+
 ## Looking without the game
 
 ```powershell
