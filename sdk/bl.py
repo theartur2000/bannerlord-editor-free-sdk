@@ -365,20 +365,29 @@ def asset_clip(a):
     return res
 
 
-@command("asset.collision", "Stages a collision body (physics shape) made of capsules and spheres, for scene entities (`scene.add_entity --physics`).",
+@command("asset.collision", "Stages a collision body (physics shape) of capsules, spheres, convex hulls and triangle meshes, for scene entities (`scene.add_entity --physics`).",
          [P("name", help="the shape's name, which entities refer to", required=True),
           P("capsule", "list", help='"x0 y0 z0 x1 y1 z1 radius" in metres, one per capsule (repeat, or separate with commas)'),
-          P("sphere", "list", help='"x y z radius" in metres, one per sphere'), P("material", help="physics material name", default="stone"), STAGE, P("force", "bool")], writes=True)
+          P("sphere", "list", help='"x y z radius" in metres, one per sphere'),
+          P("hull", "list", help="an .obj (or .psk) file per convex hull: the hull of its points is cooked with the game's PhysX library"),
+          P("mesh", "list", help="an .obj (or .psk) file per triangle mesh body, cooked as it is (static bodies only)"),
+          P("material", help="physics material name (stone, wood, adobe, default, straw, fabric, metal ...)", default="stone"), STAGE, P("force", "bool")], writes=True)
 def asset_collision(a):
-    import physics
+    import physics, preview
     caps = [_floats(c, 7, "--capsule") for c in a.get("capsule") or ()]; sph = [_floats(s_, 4, "--sphere") for s_ in a.get("sphere") or ()]
-    if not caps and not sph: raise BlError("give at least one --capsule or --sphere")
-    shape = physics.build(a["name"], capsules=[physics.capsule(c[:3], c[3:6], c[6]) for c in caps], spheres=[physics.sphere(s_[:3], s_[3]) for s_ in sph], material=a.get("material") or "stone")
+    mat = a.get("material") or "stone"; mans = []
+    for f in a.get("hull") or (): P_, F_, _ = preview.load_mesh(f); mans.append(physics.convex_hull(P_, [mat]))
+    for f in a.get("mesh") or (): P_, F_, _ = preview.load_mesh(f); mans.append(physics.triangle_mesh(P_, F_, [mat]))
+    if not caps and not sph and not mans: raise BlError("give at least one --capsule, --sphere, --hull or --mesh")
+    if mans:
+        import physx_cook
+        if not physx_cook.available(): raise BlError("hulls and meshes are cooked with the game's PhysX library, which did not load: %s" % physx_cook.why_not())
+    shape = physics.build(a["name"], capsules=[physics.capsule(c[:3], c[3:6], c[6]) for c in caps], spheres=[physics.sphere(s_[:3], s_[3]) for s_ in sph], manifolds=mans, material=mat)
     c = _cfg(); out = os.path.join(c.SDK_STAGE_DIR, a.get("stage") or "work", "Assets")
     if a.get("dry"): return {"would_write": os.path.join(out, a["name"] + "_phys.tpac"), "capsules": len(caps), "spheres": len(sph)}
     try: p = physics.write_package(shape, out, bool(a.get("force")))
     except FileExistsError as e: raise BlError(str(e), "pass --force to replace it")
-    return {"staged": [p], "capsules": len(caps), "spheres": len(sph), "note": "written in the game's format; not yet loaded in game"}
+    return {"staged": [p], "capsules": len(caps), "spheres": len(sph), "hulls_and_meshes": len(mans)}
 
 
 def _opts(a, keys): return [x for k in keys if a.get(k) not in (None, "") for x in ("--" + k.replace("_", "-"), str(a[k]))]
@@ -535,7 +544,7 @@ def scene_add_entity(a):
     if a.get("name"): kw["name"] = a["name"]
     if a.get("physics"): kw["physics"] = a["physics"]
     if a.get("mesh"): kw["mesh"] = a["mesh"]; kw.setdefault("name", a["mesh"])
-    else: kw["prefab"] = a["prefab"]
+    elif a.get("prefab"): kw["prefab"] = a["prefab"]
     doc.add_entity(**kw)
     if not a.get("dry"): doc.save()
     return {"scene": f, "added": {"prefab": a.get("prefab"), "mesh": a.get("mesh"), "position": [round(x, 3) for x in pos]}, "entities": len(doc.entities(True)), "saved": not a.get("dry")}
@@ -598,6 +607,8 @@ def scene_heightmap(a):
           P("low", "number", help="height of black in metres (default: the image's .json, else 0)"), P("high", "number", help="height of white in metres (default: the .json, else low + 80)"),
           P("rock_slope", "number", help="slope (rise over run) above which the rock layer is painted", default=0.75), P("play_radius", "number", help="radius of the walkable area in metres"),
           P("water_level", "number"), P("smooth", "number", help="blur radius in metres", default=0.0),
+          P("cover", "number", help="share of the gentle ground under grass and plants, 0..1 (default: as much as the template's own middle; 0 for none)"),
+          P("seed", "int", help="the grass patches' random seed", default=1),
           P("to", help="'stage' (default: <stage>/work/SceneObj/<name>, picked up by `bl install`), 'project' (the project's SceneObj, picked up by `bl deploy`) or a folder", default="stage")], writes=True)
 def scene_from_heightmap(a):
     import heightmap
@@ -606,7 +617,8 @@ def scene_from_heightmap(a):
     if a.get("dry"): return {"would_write": out, "template": a.get("template") or "battle_terrain_a"}
     try:
         return heightmap.to_scene(a["image"], a["name"], a.get("template") or "battle_terrain_a", a.get("low"), a.get("high"), out, float(a.get("rock_slope") or 0.75),
-                                  a.get("play_radius"), a.get("water_level"), float(a.get("smooth") or 0.0), log=lambda *x: LOG.append(" ".join(str(y) for y in x)))
+                                  a.get("play_radius"), a.get("water_level"), float(a.get("smooth") or 0.0), a.get("cover"), int(a.get("seed") or 1),
+                                  log=lambda *x: LOG.append(" ".join(str(y) for y in x)))
     except ValueError as e: raise BlError(str(e))
 
 
@@ -773,7 +785,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, entity, teleport, look, screenshot, spawn, remove, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

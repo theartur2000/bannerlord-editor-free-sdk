@@ -12,8 +12,9 @@
 //   raycast x= y= [top=] [bottom=]         a vertical ray down at x, y (default from 50 m above the ground to 10 m below):
 //                                          what it hits first, terrain or an entity's collision body, and how far down;
 //                                          exclude=<hex body flags> (default the engine's focus ray filter), fixed=1 for the
-//                                          ray cast variant on the fixed-step physics world
-//   entity name=                           an entity of the scene by name: position, body flags, physics bounding box
+//                                          ray cast variant on the fixed-step physics world. Measured in game: rays see
+//                                          capsule and sphere bodies and prefabs spawned at run time (fixed=1), not the
+//                                          triangle-mesh bodies of entities loaded with the scene, shipped ones included
 //   teleport x= y= [z=]                    move the player (and the mount) there; z defaults to the ground
 //   look bearing= [elevation=]             turn the camera, in degrees (bearing 0 looks along +y)
 //   screenshot path=                       write a screenshot (a .bmp) at the end of this frame
@@ -129,19 +130,6 @@ namespace __MOD__
                         : m.Scene.RayCastForClosestEntityOrTerrain(new Vec3(x, y, zTop), new Vec3(x, y, zBottom), out dist, out at, out ent, 0.01f, ex);
                     r["hit"] = hit; r["terrain_z"] = g;
                     if (hit) { r["z"] = at.z; r["distance"] = dist; r["entity"] = ent.IsValid ? ent.Name : null; }
-                    return r;
-                }
-                case "entity":
-                {
-                    Need(m);
-                    if (!a.ContainsKey("name")) throw new Exception("entity needs name=");
-                    GameEntity e = m.Scene.GetFirstEntityWithName(a["name"]);
-                    if (e == null) throw new Exception("no entity named " + a["name"]);
-                    Vec3 p = e.GlobalPosition; r["position"] = new[] { p.x, p.y, p.z };
-                    r["body_flags"] = ((uint)e.BodyFlag).ToString("x"); r["physics_desc_flags"] = ((uint)e.PhysicsDescBodyFlag).ToString("x");
-                    var bb = e.ComputeGlobalPhysicsBoundingBoxMinMax();
-                    r["physics_box_min"] = new[] { bb.Item1.x, bb.Item1.y, bb.Item1.z }; r["physics_box_max"] = new[] { bb.Item2.x, bb.Item2.y, bb.Item2.z };
-                    try { r["physics_material"] = e.GetPhysicsMaterial().Name; } catch (Exception) { r["physics_material"] = null; }
                     return r;
                 }
                 case "teleport":

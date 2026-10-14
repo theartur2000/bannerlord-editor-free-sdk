@@ -285,8 +285,8 @@ class Scene:
                    mesh=None, physics=None):
         """A new top-level entity, written the way the editor writes one. scripts: {script name: {variable: value}}.
         mesh: the name of a model (a metamesh) the entity shows itself, with no prefab behind it: the way to place a custom
-        model. physics: the name of a collision shape for it (only shapes the game already has; a model without one can be
-        walked through)."""
+        model. physics: the name of a collision shape for it (a shipped one, or one the module brings: physics.py,
+        `bl asset.collision`); a model without one can be walked through."""
         attrs = []
         if name is None and mesh is not None: name = mesh
         if name is not None: attrs.append(["name", name])
@@ -298,7 +298,7 @@ class Scene:
         t = [["position", _fmt(position)], ["rotation_euler", _fmt(rotation)]]
         if scale is not None: t.append(["scale", _fmt(scale)])
         el.children.append(Element("transform", t))
-        if physics: el.children.append(Element("physics", [["shape", physics], ["mass", "1.000"]]))
+        if physics: el.children.append(Element("physics", [["shape", physics]]))          # as the shipped scenes write a static body: no mass
         if mesh: el.children.append(Element("components", None, [Element("meta_mesh_component", [["name", mesh]])]))
         if scripts:
             el.children.append(Element("scripts", None, [

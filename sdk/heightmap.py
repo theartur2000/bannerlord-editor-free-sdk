@@ -9,9 +9,11 @@ image, and get a scene folder the game loads. The other direction takes a shippe
 export  writes a 16-bit greyscale PNG (row 0 = north) and <out>.json with what the grey values mean: the lowest and
         highest height in metres and the size of the terrain. `scene` reads that file back when it lies next to the image.
 scene   resamples the image to the template's grid and writes scene.xscene, terrain.bin and navmesh.bin with
-        scenebuild.build. Texture layers, atmosphere and plants come from the template, a shipped scene. Painting is plain:
-        the template's base layer everywhere, its rock layer on steep ground. Two spawn paths cross the middle and the
-        walkable area is a circle. Anything finer is a few lines of Python on top of scenebuild.build.
+        scenebuild.build. Texture layers, atmosphere and plants come from the template, a shipped scene. Painting: the
+        template's base layer everywhere, its rock layer on steep ground, and its ground-cover layer (the first layer that
+        carries grass or plant models) in patches on gentle ground, over as much of the walkable middle as the template
+        itself covers. Two spawn paths cross the middle and the walkable area is a circle. Anything finer is a few lines
+        of Python on top of scenebuild.build.
 Images: 8 or 16-bit PNG (grey; of a colour image the first channel is used), .npy (a float array in metres is taken
 as it is), .r16 / .raw (square, 16-bit little-endian).
 """
@@ -64,7 +66,8 @@ def template_folder(template):
 
 
 def to_scene(image, name, template="battle_terrain_a", low=None, high=None, out_dir=None, rock_slope=0.75, play_radius=None,
-             water_level=None, smooth=0.0, log=print):
+             water_level=None, smooth=0.0, cover=None, seed=1, log=print):
+    """cover: share (0..1) of the gentle ground the ground-cover layer takes; None = as much as the template's own middle."""
     """Builds the scene folder out_dir (default <SDK stage>/work/SceneObj/<name>) from a heightmap. Returns numbers."""
     import config, scenebuild, terraform, worldmap
     a, absolute = load(image)
@@ -88,6 +91,17 @@ def to_scene(image, name, template="battle_terrain_a", low=None, high=None, out_
     rock = next((i for i, n in enumerate(t.layer_names) if i and any(w in n.lower() for w in ("rock", "cliff"))), None)
     if rock is not None:
         masks[rock] = np.clip(np.rint(terraform.smoothstep(slope, rock_slope * 0.8, rock_slope * 1.2) * 255.0), 0, 255).astype(np.uint8)
+    # ground cover: the first layer with grass or plant models that is not a tree (flora) layer and shows in summer
+    green = next((i for i in range(1, len(t.layer_names)) if t.meshes[i] and i not in t.flora_layers and t.enabled["summer"][i]), None)
+    share = 0.0
+    if green is not None and cover != 0:
+        share = float(cover) if cover is not None else (t.paint_stats()[green]["strong"] or 0.5)
+        gentle = slope < rock_slope * 0.6
+        if gentle.any() and share > 0:
+            n = terraform.fbm(a.shape, cell, 24.0, 3, np.random.default_rng(seed))        # patches of a couple of dozen metres
+            thr = float(np.quantile(n[gentle], 1.0 - min(share, 1.0))); w = 0.04 * float(n.std() or 1.0)
+            m = terraform.smoothstep(n, thr - w, thr + w) * (1.0 - terraform.smoothstep(slope, rock_slope * 0.4, rock_slope * 0.6))
+            masks[green] = np.clip(np.rint(m * 255.0), 0, 255).astype(np.uint8)
     cx, cy = size_x / 2, size_y / 2
     R = float(play_radius) if play_radius else 0.30 * min(size_x, size_y)
     border = [(cx + R * math.cos(k * math.pi / 16), cy + R * math.sin(k * math.pi / 16)) for k in range(32)]
@@ -103,6 +117,7 @@ def to_scene(image, name, template="battle_terrain_a", low=None, high=None, out_
     res = scenebuild.build(t, out_dir, name, a, masks=masks, spawn_paths=paths, border=border, water_level=water_level, log=log)
     steep = float((slope > rock_slope).mean())
     return {"folder": out_dir, "name": name, "template": os.path.basename(os.path.normpath(t.folder)), "size_m": [size_x, size_y],
+            "ground_cover_layer": t.layer_names[green] if green is not None else None, "ground_cover_share": round(share, 3),
             "heights_m": [round(res["min"], 2), round(res["max"], 2)], "steep_share": round(steep, 3), "rock_layer": t.layer_names[rock] if rock is not None else None,
             "navmesh_faces": res["navmesh"]["faces"], "walkable_m2": res["navmesh"]["area_m2"], "play_radius_m": round(R, 1), "spawn_paths": len(paths)}
 
