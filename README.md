@@ -1,11 +1,16 @@
 # Bannerlord Editor-Free SDK
 
-The Bannerlord Editor-Free SDK is a set of Python tools for building Mount & Blade II: Bannerlord mods without the
-Modding Kit editor.
+The Bannerlord Editor-Free SDK is a modding SDK for Mount & Blade II: Bannerlord designed to be used by AI agents.
+Its purpose is to let an agent build, install and test mods faster than is possible with the official Modding Kit,
+without a person at the editor.
 
-The tools write the game's file formats directly: asset packages (`.tpac`), runtime caches (`.rdc`) and complete
-scenes (terrain, navigation mesh, entities). Input is PNG, FBX, glTF or PSK files, or plain arrays for terrain.
-Output is loaded by the game from a regular module.
+The SDK writes the game's file formats directly: asset packages (`.tpac`), runtime caches (`.rdc`), collision bodies
+and complete scenes (terrain, navigation mesh, entities). Input is PNG, FBX, glTF, PSK or OBJ files, or plain arrays for
+terrain. Output is loaded by the game from a regular module.
+
+Everything is driven through one command line, `bl`, which is also available as an MCP server: every command returns
+one JSON object, every command that changes files has a dry run, and the game can be started, observed and controlled
+unattended. People can use the same commands from a terminal.
 
 ![A generated battle map running in the game](docs/images/valley.jpg)
 
@@ -18,9 +23,19 @@ Output is loaded by the game from a regular module.
 
 ## Why
 
-The Modding Kit editor imports assets one at a time through its interface, which takes seconds to minutes per asset
-and has to be done by hand. The SDK processes an asset in seconds and runs unattended, which makes mods with tens of
-thousands of assets practical. It was developed for a total conversion with about 34,000 assets.
+The Modding Kit is an interactive editor: assets are imported one at a time through its interface, scenes are built by
+hand, and every change is checked by starting the game. An AI agent cannot operate it efficiently. The SDK replaces
+those steps with commands an agent can call and verify:
+
+| Step | Modding Kit | SDK |
+|---|---|---|
+| Import an asset | by hand, seconds to minutes each | one command, seconds, unattended |
+| Build a scene | by hand in the editor | generated from arrays, a heightmap or rules |
+| Check the result | start the game and look | previews without the game, validators, byte-level self-tests |
+| Test in the game | play manually | unattended runs with screenshots, and a bridge into the running game |
+| Iterate on a scene | restart the game | scene slots refilled while the game runs |
+
+The SDK was first developed for a total conversion with about 34,000 assets.
 
 ## Features
 
