@@ -78,6 +78,113 @@ def navmesh_write_and_read():
     assert back.payload() == nm.payload() and navmesh.check(p)
 
 
+def _nav_terrain(n=481, cell=0.5):
+    """Made-up ground, 240 m square: a plateau, a ramp, rolling hills, a pit, a round walkable area with a block cut out of it,
+    and two marked regions. Returns heights, cell, walkable mask, regions {id: mask}."""
+    yy, xx = np.mgrid[0:n, 0:n] * cell
+    z = np.where(xx < 80, 12.0, np.where(xx < 120, 12.0 + (xx - 80) * 0.3, 24.0 + 1.5 * np.sin(xx / 13.0) * np.cos(yy / 17.0)))
+    z = z - 8.0 * np.exp(-(((xx - 180) ** 2 + (yy - 60) ** 2) / 40.0))
+    walk = (np.hypot(xx - 120, yy - 120) < 112) & ~((xx > 60) & (xx < 80) & (yy > 100) & (yy < 140))
+    return z, cell, walk, {7: xx < 40, 9: (xx > 150) & (xx < 170) & (yy > 150) & (yy < 190)}
+
+
+def _nav_cover(nm, keep, k, cell):
+    """(face index, number of faces) per mesh cell, found by testing one point inside each cell against every face."""
+    gy, gx = keep.shape; step = k * cell; cnt = np.zeros((gy, gx), int); who = -np.ones((gy, gx), int); V = nm.vertices.astype(np.float64)
+    for n, (vs, _) in enumerate(nm.faces):
+        P = V[list(vs)][:, :2]
+        j0 = max(0, int(P[:, 1].min() // step)); j1 = min(gy - 1, int(P[:, 1].max() // step)); i0 = max(0, int(P[:, 0].min() // step)); i1 = min(gx - 1, int(P[:, 0].max() // step))
+        J, I = np.mgrid[j0:j1 + 1, i0:i1 + 1]; X = (I + 0.37) * step; Y = (J + 0.41) * step; inside = np.ones(X.shape, bool)
+        for a in range(len(P)):
+            b = (a + 1) % len(P); inside &= (P[b, 0] - P[a, 0]) * (Y - P[a, 1]) - (P[b, 1] - P[a, 1]) * (X - P[a, 0]) > 0
+        cnt[j0:j1 + 1, i0:i1 + 1] += inside; who[j0:j1 + 1, i0:i1 + 1][inside] = n
+    return who, cnt
+
+
+@test
+def navmesh_polygons_cover_the_grid_area_with_far_fewer_faces():
+    import navmesh, scenebuild
+    z, cell, walk, regions = _nav_terrain()
+    g, keep = scenebuild.grid_navmesh(z, cell, walk)
+    p, keep2 = scenebuild.polygon_navmesh(z, cell, walk, height_tol=0.3)
+    assert np.array_equal(keep, keep2) and keep.sum() > 1500
+    # the same ground: equal area, and a point in every cell is in exactly one face and none outside the cells is in any
+    assert abs(p.stats()["area_m2"] - g.stats()["area_m2"]) < 1e-6 * g.stats()["area_m2"], (p.stats(), g.stats())
+    who, cnt = _nav_cover(p, keep, 8, cell); assert np.array_equal(cnt == 1, keep) and cnt.max() == 1
+    # the grid has one face per cell; the polygons at least three times fewer here
+    assert len(g.faces) == keep.sum() and len(p.faces) * 3 <= len(g.faces), (len(p.faces), len(g.faces))
+    assert all(len(f[0]) in (3, 4) for f in p.faces)
+    # convex and not degenerate, edges shared by whole, consistent adjacency, one connected area
+    assert p.problems() == {"not_convex": 0, "bad_edges": 0, "edge_over_two": 0, "edge_same_way": 0, "t_junctions": 0, "duplicate_vertices": 0, "unused_vertices": 0}, p.problems()
+    assert p.components() == 1 and g.components() == 1
+    # the ground is followed: no worse than the grid where the grid is bad, else within the tolerance and a half
+    eg, ep = g.height_error(z, cell), p.height_error(z, cell)
+    assert ep["p99"] <= 0.45 and ep["max"] <= max(eg["max"], 0.45) + 1e-9 and ep["mean"] < 0.15, (eg, ep)
+    # written and read again byte for byte
+    f = os.path.join(TMP, "poly_navmesh.bin"); p.save(f); back = navmesh.NavMesh(f)
+    assert navmesh.check(f) and back.payload() == p.payload() and back.stats() == p.stats() and back.problems() == p.problems()
+
+
+@test
+def navmesh_polygons_keep_regions_apart_and_set_their_group_and_flags():
+    import scenebuild
+    z, cell, walk, regions = _nav_terrain()
+    p, keep = scenebuild.polygon_navmesh(z, cell, walk, regions=regions, region_flags={9: 0x12})
+    who, cnt = _nav_cover(p, keep, 8, cell)
+    ids = np.zeros(z.shape, int)
+    for gid, m in regions.items(): ids[m] = gid
+    mid = ids[4:keep.shape[0] * 8:8, 4:keep.shape[1] * 8:8]
+    assert np.array_equal(np.array(p.face_group)[who[keep]], mid[keep]), "a face spans two regions or carries the wrong id"
+    assert sorted(set(p.face_group)) == [0, 7, 9] and {p.face_flags[n] for n, g in enumerate(p.face_group) if g == 9} == {0x12}
+    assert {p.face_flags[n] for n, g in enumerate(p.face_group) if g != 9} == {0xFFFFFFFF}
+    assert p.problems()["t_junctions"] == 0 and p.components() == 1
+    q, _ = scenebuild.polygon_navmesh(z, cell, walk, regions=ids); assert q.face_group == p.face_group, "an id array and a dict of masks mean the same"
+    # faces are cut at the regions' borders: more than without regions, never more than one per cell
+    assert len(scenebuild.polygon_navmesh(z, cell, walk)[0].faces) < len(p.faces) <= keep.sum()
+
+
+@test
+def navmesh_polygons_edge_cases():
+    import navmesh, scenebuild
+    # flat ground: faces as large as allowed and no larger
+    cell = 1.0; n = 257; z = np.full((n, n), 5.0); walk = np.ones((n, n), bool)
+    p, keep = scenebuild.polygon_navmesh(z, cell, walk, step=4.0, max_size=32.0)
+    side = max(np.ptp(p.vertices[list(f[0])][:, :2], axis=0).max() for f in p.faces)
+    assert len(p.faces) == 64 and abs(side - 32.0) < 1e-6 and p.problems()["t_junctions"] == 0, (len(p.faces), side)
+    p2, _ = scenebuild.polygon_navmesh(z, cell, walk, step=4.0, max_size=8.0); assert len(p2.faces) == 32 * 32
+    # one cell, and no ground at all
+    one, _ = scenebuild.polygon_navmesh(np.zeros((9, 9)), 1.0, np.ones((9, 9), bool), step=8.0); assert len(one.faces) == 1 and not any(one.problems().values())
+    none, kn = scenebuild.polygon_navmesh(np.zeros((9, 9)), 1.0, np.zeros((9, 9), bool)); assert len(none.faces) == 0 and not kn.any()
+    # ground that is rough everywhere stays at the cell size
+    r = np.random.default_rng(5).normal(0, 1.5, (129, 129)); rp, rk = scenebuild.polygon_navmesh(r, 1.0, np.ones((129, 129), bool), max_slope=99.0)
+    assert len(rp.faces) == rk.sum() and rp.problems()["t_junctions"] == 0
+    try: scenebuild.build(None, os.path.join(TMP, "x"), "x", np.zeros((2, 2)), navmesh="blobs")
+    except ValueError as e: assert "polygons" in str(e)
+    else: raise AssertionError("an unknown navmesh kind was accepted")
+    out = bl_run("scene.from_heightmap", "nothing.png", "x", "--navmesh", "blobs"); assert not out["ok"] and "navmesh" in json.dumps(out), out
+
+
+@test
+def navmesh_convex_pieces_and_the_geometry_checker():
+    import navmesh
+    # a square with a vertex in the middle of one side, and with one in the middle of every side: cut into pieces of 3 or 4 corners
+    # that use those vertices, so that the faces next door meet them along whole edges
+    for pts in ([(0, 0), (1, 0), (2, 0), (2, 2), (0, 2)], [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (0, 1)]):
+        pcs = navmesh.convex_pieces(pts); assert all(3 <= len(q) <= 4 for q in pcs), pcs
+        area = sum(abs(sum(pts[q[i]][0] * pts[q[(i + 1) % len(q)]][1] - pts[q[(i + 1) % len(q)]][0] * pts[q[i]][1] for i in range(len(q)))) / 2 for q in pcs)
+        assert abs(area - 4.0) < 1e-9, area
+        sides = {frozenset((q[i], q[(i + 1) % len(q)])) for q in pcs for i in range(len(q))}
+        assert all(frozenset((i, (i + 1) % len(pts))) in sides for i in range(len(pts))), "every side of the outline must be a side of a piece"
+    assert len(navmesh.convex_pieces([(0, 0), (1, 0), (2, 0), (2, 2), (0, 2)])) == 2          # a triangle and a quad
+    V = np.array([[0, 0, 0], [4, 0, 0], [8, 0, 0], [8, 4, 0], [4, 4, 0], [0, 4, 0], [4, 8, 0], [0, 8, 0]], np.float64)
+    good = navmesh.NavMesh.from_polygons(V, [(0, 1, 4, 5), (1, 2, 3, 4), (5, 4, 6, 7)]); assert not any(good.problems().values()) and good.components() == 1
+    # a face with a corner (vertex 4) on its side, with the face above ending there: the faces are not joined along the whole edge
+    tj = navmesh.NavMesh.from_polygons(V, [(0, 2, 3, 5), (5, 4, 6, 7)]); assert tj.problems()["t_junctions"] >= 1, tj.problems()
+    assert navmesh.NavMesh.from_polygons(V, [(0, 5, 4, 1)]).problems()["not_convex"] == 1                      # clockwise
+    assert navmesh.NavMesh.from_polygons(V, [(0, 1, 4, 5), (1, 4, 3, 2)]).problems()["edge_same_way"] == 1     # the second face is turned the wrong way
+    assert navmesh.NavMesh.from_polygons(V, [(0, 1, 4, 5), (2, 3, 6, 7)]).components() == 2
+
+
 @test
 def scene_file_edits_keep_every_other_byte():
     import scene

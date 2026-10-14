@@ -653,6 +653,8 @@ def scene_heightmap(a):
           P("water_level", "number"), P("smooth", "number", help="blur radius in metres", default=0.0),
           P("cover", "number", help="share of the gentle ground under grass and plants, 0..1 (default: as much as the template's own middle; 0 for none)"),
           P("seed", "int", help="the grass patches' random seed", default=1),
+          P("navmesh", help="grid: one 4 m square face per walkable cell (default). polygons: the same ground as large convex faces that follow the terrain, far fewer faces",
+            default="grid", choices=("grid", "polygons")),
           P("to", help="'stage' (default: <stage>/work/SceneObj/<name>, picked up by `bl install`), 'project' (the project's SceneObj, picked up by `bl deploy`) or a folder", default="stage")], writes=True)
 def scene_from_heightmap(a):
     import heightmap
@@ -662,7 +664,7 @@ def scene_from_heightmap(a):
     try:
         return heightmap.to_scene(a["image"], a["name"], a.get("template") or "battle_terrain_a", a.get("low"), a.get("high"), out, float(a.get("rock_slope") or 0.75),
                                   a.get("play_radius"), a.get("water_level"), float(a.get("smooth") or 0.0), a.get("cover"), int(a.get("seed") or 1),
-                                  log=lambda *x: LOG.append(" ".join(str(y) for y in x)))
+                                  log=lambda *x: LOG.append(" ".join(str(y) for y in x)), navmesh=a.get("navmesh") or "grid")
     except ValueError as e: raise BlError(str(e))
 
 

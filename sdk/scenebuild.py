@@ -114,9 +114,10 @@ def physics_maps(template, masks, shape, threshold=128):
     return out
 
 
-def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
-    """A navmesh of square faces `step` metres wide over the samples where `walkable` is true and the ground is not steeper
-    than max_slope (rise over run). Only the largest connected area is kept. z: heights in metres, row = y."""
+def walkable_cells(z, cell, walkable, step=4.0, max_slope=0.75):
+    """(boolean (gy, gx) array of the navmesh cells to cover, samples per cell). A cell `step` metres wide is walkable when its four
+    corners and its centre are `walkable` and the ground there is not steeper than max_slope (rise over run). Only the largest
+    connected area (4 neighbours) is kept. Both navmesh builders start from this, so they cover the same ground."""
     k = max(1, int(round(step / cell)))
     sl = terraform.slope(terraform.blur_fast(z, 2), cell)
     ok = walkable & (sl <= max_slope)
@@ -135,7 +136,14 @@ def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
                 if 0 <= yy < cells.shape[0] and 0 <= xx < cells.shape[1] and cells[yy, xx] and not lab[yy, xx]:
                     lab[yy, xx] = cur; stack.append((yy, xx))
         if n > best[0]: best = (n, cur)
-    keep = lab == best[1] if best[0] else cells
+    return (lab == best[1] if best[0] else cells), k
+
+
+def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
+    """A navmesh of square faces `step` metres wide over the samples where `walkable` is true and the ground is not steeper
+    than max_slope (rise over run). Only the largest connected area is kept. z: heights in metres, row = y."""
+    keep, k = walkable_cells(z, cell, walkable, step, max_slope)
+    gy, gx = keep.shape
     vid = -np.ones((gy + 1, gx + 1), np.int64); verts = []; polys = []
     def v(j, i):
         if vid[j, i] < 0:
@@ -144,6 +152,29 @@ def grid_navmesh(z, cell, walkable, step=4.0, max_slope=0.75):
     for j, i in zip(*np.nonzero(keep)):
         polys.append((v(j, i), v(j, i + 1), v(j + 1, i + 1), v(j + 1, i)))     # counter-clockwise seen from above
     return navmesh.NavMesh.from_polygons(np.asarray(verts, np.float32).reshape(-1, 3), polys), keep
+
+
+def polygon_navmesh(z, cell, walkable, step=4.0, max_slope=0.75, height_tol=0.5, max_size=32.0, regions=None, region_flags=None):
+    """The same ground as grid_navmesh (the same cells, exactly), as large convex faces of 3 or 4 corners that follow the terrain:
+    a square of cells becomes one face where every height sample in it is within `height_tol` metres of the surface through its
+    corners, up to `max_size` metres a side; where larger faces meet smaller ones the larger is cut so that neighbours share whole
+    edges (navmesh.mesh_cells explains how). Flat ground is a few faces, rough ground stays at `step`.
+    regions   marks areas with a face group id (spawn zones, a siege wall top, a ford): an int array of z's shape (the id at the
+              middle sample of each cell counts), or a dict {id: bool array of z's shape} (later ids win; 0 elsewhere). A face
+              never spans two ids. A script switches the faces of an id on and off.
+    region_flags  {id: u32 flags} for the faces of an id (default 0xFFFFFFFF, as on most shipped battlefields)
+    Returns (NavMesh, boolean cell array)."""
+    keep, k = walkable_cells(z, cell, walkable, step, max_slope)
+    rc = None
+    if regions is not None:
+        gy, gx = keep.shape
+        if isinstance(regions, dict):
+            r = np.zeros(z.shape, np.int64)
+            for gid in regions: r[np.asarray(regions[gid], bool)] = int(gid)
+        else: r = np.asarray(regions, np.int64)
+        assert r.shape == z.shape, ("regions must have the shape of the heights", r.shape, z.shape)
+        rc = r[k // 2:gy * k:k, k // 2:gx * k:k]
+    return navmesh.NavMesh.from_height_field(z, cell, keep, k, rc, region_flags, height_tol, max_size), keep
 
 
 def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None, mesh_density=None):
@@ -181,7 +212,8 @@ def edit_layer(layer, six_side=None, textures=None, meshes=None, attrs=None, mes
 
 
 def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths=(), border=(), walkable=None,
-          nav_step=4.0, nav_max_slope=0.75, water_level=None, layer_edits=None, author="bannerlord-editor-free-sdk", log=print):
+          nav_step=4.0, nav_max_slope=0.75, water_level=None, layer_edits=None, author="bannerlord-editor-free-sdk", log=print,
+          navmesh="grid", nav_height_tol=0.5, nav_max_size=32.0, nav_regions=None, nav_region_flags=None):
     """Writes the scene folder out_dir for a scene called `name`.
 
     heights      float array in metres, shape template.samples (row = y)
@@ -192,7 +224,12 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
     walkable     bool array: where the navmesh may go (default: inside the border)
     water_level  metres: the one water surface of the scene (None: the setting of the template, usually no water)
     layer_edits  {layer index: keyword arguments of edit_layer}: changes to the template's texture layers
+    navmesh      "grid" (default): square faces nav_step metres wide, one per walkable cell (grid_navmesh); "polygons": the same
+                 ground as large convex faces that follow the terrain within nav_height_tol metres, none longer than nav_max_size
+                 metres on a side: flat ground is a few faces, rough ground stays at nav_step (polygon_navmesh)
+    nav_regions, nav_region_flags   "polygons" only: region ids to mark areas with, and their flags (see polygon_navmesh)
     Returns a dict of what was written."""
+    if navmesh not in ("grid", "polygons"): raise ValueError("navmesh is 'grid' or 'polygons', not %r" % (navmesh,))
     t = template; masks = dict(masks or {})
     assert heights.shape == t.samples, (heights.shape, t.samples)
     os.makedirs(out_dir, exist_ok=True)
@@ -274,9 +311,10 @@ def build(template, out_dir, name, heights, masks=None, entities=(), spawn_paths
     # ---- navmesh.bin
     if walkable is None:
         walkable = polygon_mask(border, heights.shape, cell) if len(border) >= 3 else np.ones(heights.shape, bool)
-    nm, cells = grid_navmesh(z, cell, walkable, nav_step, nav_max_slope)
+    if navmesh == "polygons": nm, cells = polygon_navmesh(z, cell, walkable, nav_step, nav_max_slope, nav_height_tol, nav_max_size, nav_regions, nav_region_flags)
+    else: nm, cells = grid_navmesh(z, cell, walkable, nav_step, nav_max_slope)
     nm.save(os.path.join(out_dir, "navmesh.bin"))
-    st = nm.stats(); log("navmesh.bin %d faces, %.0f m2" % (st["faces"], st["area_m2"]))
+    st = nm.stats(); log("navmesh.bin (%s) %d faces, %.0f m2" % (navmesh, st["faces"], st["area_m2"]))
 
     # ---- the rest
     with open(os.path.join(out_dir, "flora.bin"), "wb") as f: f.write(EMPTY_FLORA)

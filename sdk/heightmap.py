@@ -4,7 +4,7 @@ This is the bridge to any terrain tool: sculpt in Blender, World Machine, Gaea o
 image, and get a scene folder the game loads. The other direction takes a shipped or generated scene out for editing.
 
     python sdk/heightmap.py export <scene folder> <out.png>
-    python sdk/heightmap.py scene <image> <name> [--template battle_terrain_a] [--low 0] [--high 80] [--out <folder>]
+    python sdk/heightmap.py scene <image> <name> [--template battle_terrain_a] [--low 0] [--high 80] [--out <folder>] [--navmesh grid|polygons]
 
 export  writes a 16-bit greyscale PNG (row 0 = north) and <out>.json with what the grey values mean: the lowest and
         highest height in metres and the size of the terrain. `scene` reads that file back when it lies next to the image.
@@ -14,6 +14,8 @@ scene   resamples the image to the template's grid and writes scene.xscene, terr
         carries grass or plant models) in patches on gentle ground, over as much of the walkable middle as the template
         itself covers. Two spawn paths cross the middle and the walkable area is a circle. Anything finer is a few lines
         of Python on top of scenebuild.build.
+        --navmesh  grid (default): one 4 m square face per walkable cell; polygons: the same ground as large convex faces that
+        follow the terrain (see scenebuild.polygon_navmesh), far fewer faces on open ground.
 Images: 8 or 16-bit PNG (grey; of a colour image the first channel is used), .npy (a float array in metres is taken
 as it is), .r16 / .raw (square, 16-bit little-endian).
 """
@@ -66,9 +68,11 @@ def template_folder(template):
 
 
 def to_scene(image, name, template="battle_terrain_a", low=None, high=None, out_dir=None, rock_slope=0.75, play_radius=None,
-             water_level=None, smooth=0.0, cover=None, seed=1, log=print):
-    """cover: share (0..1) of the gentle ground the ground-cover layer takes; None = as much as the template's own middle."""
-    """Builds the scene folder out_dir (default <SDK stage>/work/SceneObj/<name>) from a heightmap. Returns numbers."""
+             water_level=None, smooth=0.0, cover=None, seed=1, log=print, navmesh="grid"):
+    """Builds the scene folder out_dir (default <SDK stage>/work/SceneObj/<name>) from a heightmap. Returns numbers.
+    cover: share (0..1) of the gentle ground the ground-cover layer takes; None = as much as the template's own middle.
+    navmesh: "grid" (default), one 4 m square face per walkable cell, or "polygons", the same ground as large convex faces
+    that follow the terrain (scenebuild.polygon_navmesh): a fraction of the faces, every edge shared by whole with the next face."""
     import config, scenebuild, terraform, worldmap
     a, absolute = load(image)
     meta_file = image + ".json"
@@ -114,17 +118,17 @@ def to_scene(image, name, template="battle_terrain_a", low=None, high=None, out_
             pts.append((x, y, ground(x, y)))
         paths.append(pts)
     if out_dir is None: out_dir = os.path.join(config.SDK_STAGE_DIR, "work", "SceneObj", name)
-    res = scenebuild.build(t, out_dir, name, a, masks=masks, spawn_paths=paths, border=border, water_level=water_level, log=log)
+    res = scenebuild.build(t, out_dir, name, a, masks=masks, spawn_paths=paths, border=border, water_level=water_level, log=log, navmesh=navmesh)
     steep = float((slope > rock_slope).mean())
     return {"folder": out_dir, "name": name, "template": os.path.basename(os.path.normpath(t.folder)), "size_m": [size_x, size_y],
             "ground_cover_layer": t.layer_names[green] if green is not None else None, "ground_cover_share": round(share, 3),
             "heights_m": [round(res["min"], 2), round(res["max"], 2)], "steep_share": round(steep, 3), "rock_layer": t.layer_names[rock] if rock is not None else None,
-            "navmesh_faces": res["navmesh"]["faces"], "walkable_m2": res["navmesh"]["area_m2"], "play_radius_m": round(R, 1), "spawn_paths": len(paths)}
+            "navmesh": navmesh, "navmesh_faces": res["navmesh"]["faces"], "walkable_m2": res["navmesh"]["area_m2"], "play_radius_m": round(R, 1), "spawn_paths": len(paths)}
 
 
 if __name__ == "__main__":
     a = sys.argv[1:]; opt = lambda k, d=None: a[a.index(k) + 1] if k in a else d
     if len(a) >= 3 and a[0] == "export": print(export(a[1], a[2]))
     elif len(a) >= 3 and a[0] == "scene":
-        print(to_scene(a[1], a[2], opt("--template", "battle_terrain_a"), opt("--low") and float(opt("--low")), opt("--high") and float(opt("--high")), opt("--out")))
+        print(to_scene(a[1], a[2], opt("--template", "battle_terrain_a"), opt("--low") and float(opt("--low")), opt("--high") and float(opt("--high")), opt("--out"), navmesh=opt("--navmesh", "grid")))
     else: print(__doc__)
