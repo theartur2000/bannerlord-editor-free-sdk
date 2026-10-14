@@ -218,6 +218,11 @@ itself a module that does this, and the editor has an `EditorGame`.
 | M6 | B8 world map | a new continent in a campaign |
 | M7 | Stream E | a small standalone game |
 
+**M0, first probe (2026-10-13).** `bin\Win64_Shipping_wEditor\Bannerlord.exe` started directly with
+`/editor_only /open_scene battle_terrain_a` (with and without `/suppress_message_boxes`) loads its XML and packages and
+then shuts down at frame 0, right after "Unable to initialize Steam API" in its log. The Modding Kit is normally started
+by Steam under its own app id; the next probe should start it that way. The switches themselves are still untried.
+
 M0 decides how much of B5 and B6 is "call the engine" and how much is "decode the file", so it comes first and it is short.
 
 ## 6. Risks
