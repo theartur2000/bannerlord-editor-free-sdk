@@ -3,8 +3,18 @@
 Measured in game (2026-10-14): a module's SceneObj/Main_map/scene.xscene is the one the campaign reads (the log names it,
 and MapScene.GetMainMapModule picks the last active module that has one), and the copy's terrain.bin written here holds the
 edit, but the map is drawn and queried (MapSceneWrapper.GetHeightAtPoint) exactly as shipped: a 6-unit rise was neither
-visible nor measurable. The map's heights evidently also live in its tile set (TileSets/WorldMap.gts and pages, 2.1 GB),
-whose format is not decoded. So `bl` offers no map height command; what follows writes valid files for that next step.
+visible nor measurable. So `bl` offers no map height command; what follows writes valid files for that next step.
+
+Narrowed down in game the same day (campaign started by the test driver, heights read with `bl live mapheight`):
+- vista_tileset="none" in the module's scene.xscene does take effect: the map is then drawn without the tile set's colours
+  (dark ground; the map mods TOR and Shokuho set it and ship their own vista_diffuse_name / vista_normalmap textures).
+- The heights stay SandBox's (they match its terrain.bin to about 0.005) whether the module's terrain.bin holds a +10 rise,
+  is a 0-byte file, or the module is loaded before Sandbox. They also stay the same while each of these is locked against
+  any opening for the whole run: SandBox's terrain.bin, SandBox/SceneEditData/Main_map/terrain_ed.bin, an inactive
+  module's copy of the map, and (with the tile set off) every file of SandBox's tile set. The source of the map's heights
+  is therefore none of those files; the engine side is being traced (bl2_re JOURNAL.md, 2026-10-14).
+- The campaign's height query (MapScene.GetHeightAtPoint) is a physics query on the scene, not the navmesh, but the party
+  navmesh's vertices lie about half a unit above the terrain, so set_heights moves them by the same change.
 
 
 SandBox's map scene (MapScene.GetMainMapModule) is read from the last active module that has SceneObj/Main_map/scene.xscene,
@@ -79,7 +89,24 @@ def set_heights(scene_dir, z):
         if node.get("min_height") is not None and ((lo, hi) != (info["min"], info["max"]) or iy * info["nx"] + ix in changed):   # untouched nodes keep their text
             node.set("min_height", "%.3f" % float(zz.min())); node.set("max_height", "%.3f" % float(zz.max()))
     doc.save()
-    return {"min": round(lo, 3), "max": round(hi, 3), "terrain_bytes": len(blob), "nodes_changed": len(changed)}
+    moved = _move_navmesh(scene_dir, zq - old, info["node_size"] / 256.0)
+    return {"min": round(lo, 3), "max": round(hi, 3), "terrain_bytes": len(blob), "nodes_changed": len(changed), "navmesh_vertices_moved": moved}
+
+
+def _move_navmesh(scene_dir, dz, cell):
+    """Raises or lowers the party navmesh's vertices by the terrain's change under them. The campaign takes heights from
+    the navmesh (MapSceneWrapper.GetHeightAtPoint), whose vertices lie about half a unit above the terrain."""
+    import navmesh
+    p = os.path.join(scene_dir, "navmesh.bin")
+    if not os.path.isfile(p): return 0
+    n = navmesh.NavMesh(p); v = n.vertices
+    fx = np.clip(v[:, 0] / cell, 0, dz.shape[1] - 1.001); fy = np.clip(v[:, 1] / cell, 0, dz.shape[0] - 1.001)
+    i0 = fx.astype(int); j0 = fy.astype(int); tx = fx - i0; ty = fy - j0
+    d = (dz[j0, i0] * (1 - tx) * (1 - ty) + dz[j0, i0 + 1] * tx * (1 - ty) + dz[j0 + 1, i0] * (1 - tx) * ty + dz[j0 + 1, i0 + 1] * tx * ty)
+    moved = int((np.abs(d) > 1e-4).sum())
+    if moved:
+        n.vertices = (v + np.stack([np.zeros_like(d), np.zeros_like(d), d], 1)).astype(np.float32); n.save(p)
+    return moved
 
 
 def bump(scene_dir, x, y, radius, height):
