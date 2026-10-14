@@ -143,7 +143,7 @@ Safety rules built into the command line:
 | Polygon navmesh | `--navmesh polygons` merges the walkable grid into tris and quads that share whole edges, with region ids per face, 1.3 to 6x fewer faces than the grid depending on the relief. Verified in game: a 200 against 200 battle on a polygon navmesh (10,891 faces) loads, the armies cross the map and fight. |
 | Siege and village maps | Verified in game: a shipped castle copied with `scene.copy`, edited with `scene.add_entity`, and listed with `scene.register --kind siege` runs as a Custom Battle siege (200 against 200), with the edits in place. A copied village map listed with `--kind village` runs as a Custom Battle village fight the same way. Interiors are verified in a campaign: `bl live indoor` opens a town's lord's hall the way the game does, and with `scene=` it opens an edited copy of the hall made with `scene.copy` and `scene.add_entity`, edits in place. |
 | Scene slots | Verified in game: a slot filled while the game ran was then loaded for a battle, and slots used in one session were emptied at the next start. |
-| Collision bodies | Verified in game: bodies made by the SDK (capsule and sphere, a cooked convex hull, a cooked triangle mesh) on prefabs spawned while the game runs; a ray cast hits each at the expected height to the millimetre, the same as the game's own fence body rebuilt by the SDK. Bodies on entities placed in a scene file load without errors; ray casts do not see those, the game's own included, so that case is unconfirmed. |
+| Collision bodies | Verified in game: bodies made by the SDK (capsule and sphere, a cooked convex hull, a cooked triangle mesh) on prefabs spawned while the game runs; a ray cast hits each at the expected height to the millimetre, the same as the game's own fence body rebuilt by the SDK. Bodies on entities placed in a scene file work too: the player, dropped from above onto a cooked 3 m box hull placed with `scene.add_entity --physics`, stands at the ground plus 3 m to the millimetre, and on the ground 6 m beside it. |
 | Workshop upload file | Written to the format the game's uploader reads. Not verified by an upload. |
 | Other game versions | Untested. `bl compat` reports what still matches. |
 
@@ -366,8 +366,6 @@ Verified for game v1.4.8.119303:
   power-of-two textures and differs more for other sizes and for alpha.
 
 Not verified:
-
-- Collision bodies on entities placed in a scene file (see the status table).
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a
   game update.

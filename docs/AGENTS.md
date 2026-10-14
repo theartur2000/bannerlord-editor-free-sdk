@@ -181,8 +181,9 @@ bl live quit
 ```
 
 Ray casts see capsule and sphere bodies (the module's own included) and prefabs spawned while the game runs (with
-`fixed=1`). They do not see the triangle-mesh bodies of entities loaded with the scene, shipped ones included, so a
-ray cast cannot confirm such a body.
+`fixed=1`), and convex hulls on entities placed in the scene file. They do not see the triangle-mesh bodies of entities
+loaded with the scene, shipped ones included. To check such a body, drop the player on it: `bl live teleport` with a z
+above it, then `bl live state` shows the height the player stands at.
 
 ## Scenes without a restart
 
