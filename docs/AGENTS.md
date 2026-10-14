@@ -102,6 +102,23 @@ bl scene register my_castle --kind siege          # or village, lords_hall
 bl run --words "type=Siege scene=my_castle tod=12 fight secs=60 quit" --launch
 ```
 
+Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
+bridge, from the campaign map:
+
+```powershell
+bl scene copy sturgia_castle_keep_a_l2_interior my_hall --to project
+bl scene add-entity my_hall --prefab my_prefab --position "11.5 25 2.7"
+bl deploy
+bl live.enable
+bl run --campaign --words "campaign near=town_S1" --launch     # in the background
+bl live state                                                  # wait for game_state MapState
+bl live indoor --values settlement=town_S1,location=lordshall,scene=my_hall   # enters the town
+bl live indoor --values settlement=town_S1,location=lordshall,scene=my_hall   # opens the hall
+```
+
+Without `scene=` the settlement's own scene for that location opens. `indoor` refuses until the campaign map is up:
+opening a mission during character creation hangs the game.
+
 `--on-ground` takes the height of the terrain. In towns and castles the walking surface is often a model above the
 terrain (a road, a ramp, a courtyard floor): give z yourself there, or measure it in game with `bl live raycast`.
 

@@ -875,7 +875,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, indoor, sprite, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

@@ -27,6 +27,9 @@
 //   settlement id=                         a settlement of the running campaign: name, position, culture, owner
 //   mapheight x= y=                        the campaign map's height at a position (map units)
 //   mapmove x= y=                          put the player's party at a campaign map position (the map camera follows it)
+//   indoor settlement= location= [scene=]  in a campaign, open a settlement's interior (lordshall, tavern, arena, center ...)
+//                                          as the game does; scene= loads another scene there (an edited copy). The first
+//                                          call enters the settlement and answers entering=; call again to open the location
 //   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
 //   quit                                   quit the game
@@ -110,6 +113,7 @@ namespace __MOD__
                     ScreenBase top = ScreenManager.TopScreen;
                     r["screen"] = top == null ? "none" : top.GetType().Name;
                     r["in_mission"] = m != null;
+                    r["game_state"] = GameStateManager.Current?.ActiveState?.GetType().Name ?? "none";   // MapState once a campaign is on its map
                     if (m != null)
                     {
                         r["scene"] = m.SceneName;
@@ -242,6 +246,33 @@ namespace __MOD__
                     var to = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true);
                     TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position = to;
                     Vec2 now = TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position.ToVec2(); r["party"] = new[] { now.x, now.y };
+                    return r;
+                }
+                case "indoor":
+                {
+                    if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
+                    var gs = GameStateManager.Current?.ActiveState;      // opening a mission from character creation hangs on the loading screen
+                    if (!(gs is TaleWorlds.CampaignSystem.GameState.MapState)) throw new Exception("the campaign map is not up (game state " + (gs?.GetType().Name ?? "none") + "); wait until bl live state shows game_state MapState");
+                    var st = TaleWorlds.CampaignSystem.Settlements.Settlement.Find(a.ContainsKey("settlement") ? a["settlement"] : "");
+                    if (st == null) throw new Exception("no settlement " + (a.ContainsKey("settlement") ? a["settlement"] : "(settlement= missing)"));
+                    var loc = st.LocationComplex?.GetLocationWithId(a.ContainsKey("location") ? a["location"] : "lordshall");
+                    if (loc == null) throw new Exception(st.StringId + " has no location " + (a.ContainsKey("location") ? a["location"] : "lordshall"));
+                    // an interior mission reads LocationComplex.Current, which exists only while the party is inside the settlement:
+                    // the first call enters it (the town menu opens a frame later), the next one opens the location
+                    var le = TaleWorlds.CampaignSystem.Encounters.PlayerEncounter.LocationEncounter;
+                    if (le == null)
+                    {
+                        if (TaleWorlds.CampaignSystem.Encounters.PlayerEncounter.Current == null)
+                            TaleWorlds.CampaignSystem.EncounterManager.StartSettlementEncounter(TaleWorlds.CampaignSystem.Party.MobileParty.MainParty, st);
+                        r["entering"] = st.StringId; r["next"] = "call indoor again in a second or two, once the settlement menu is up";
+                        return r;
+                    }
+                    if (le.Settlement != st) throw new Exception("the party is inside " + le.Settlement.StringId + ", not " + st.StringId);
+                    int level = st.Town != null ? st.Town.GetWallLevel() : 1;
+                    string scene = loc.GetSceneName(level);
+                    if (a.ContainsKey("scene")) { scene = a["scene"]; TaleWorlds.CampaignSystem.CampaignMission.OpenIndoorMission(scene, level, loc, null); }
+                    else le.CreateAndOpenMissionController(loc);
+                    r["scene"] = scene; r["level"] = level; r["location"] = loc.StringId;
                     return r;
                 }
                 case "sprite":
