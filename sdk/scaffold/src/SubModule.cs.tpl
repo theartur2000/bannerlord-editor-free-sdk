@@ -1,8 +1,8 @@
 // __NAME__: the module's entry point.
 //
 // The game calls the overrides below. What is here already: a log file (Modules/__MOD__/__MODLOWER___log.txt), the
-// unattended test driver (AutoTest.cs) and the scratch scene slots (SceneSlots.cs). Put the mod's own code in new files
-// and hook it in where the comments say.
+// unattended test driver (AutoTest.cs), the scratch scene slots (SceneSlots.cs) and the bridge that takes commands from
+// outside while the game runs (Bridge.cs). Put the mod's own code in new files and hook it in where the comments say.
 using System;
 using System.IO;
 using TaleWorlds.Core;
@@ -28,6 +28,7 @@ namespace __MOD__
         {
             base.OnApplicationTick(dt);
             AutoTest.Tick(dt);
+            Bridge.Tick(dt);
         }
 
         public override void OnMissionBehaviorInitialize(Mission mission)

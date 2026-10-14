@@ -684,6 +684,34 @@ def slots_reset(a):
     except ValueError as e: raise BlError(str(e))
 
 
+# ---------------------------------------------------------------- the running game
+
+@command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
+         "Commands: ping, state, ground, teleport, look, screenshot, spawn, remove, say, quit.",
+         [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
+          P("timeout", "number", default=10.0)])
+def live(a):
+    import bridge
+    if a["cmd"] not in bridge.COMMANDS: raise BlError("no bridge command %s" % a["cmd"], "it knows: " + ", ".join(bridge.COMMANDS))
+    m = _module_dir(); vals = {}
+    for kv in a.get("values") or ():
+        if "=" not in kv: raise BlError("--values takes key=value pairs, got %r" % kv)
+        k, v = kv.split("=", 1); vals[k.strip()] = v
+    if not _cfg().game_processes(): raise BlError("the game is not running", "enable the bridge (`bl live.enable`), then start the game with the module")
+    try: return bridge.send(m, a["cmd"], vals, float(a.get("timeout") or 10.0))
+    except TimeoutError as e: raise BlError(str(e), "is the bridge on (`bl live.enable` before the game starts), and is the game past its loading screen?")
+    except (RuntimeError, ValueError) as e: raise BlError(str(e))
+
+
+@command("live.enable", "Makes the module listen for `bl live` commands from its next start on (or stops it with --off).", [P("off", "bool")], writes=True)
+def live_enable(a):
+    import bridge
+    m = _module_dir()
+    if a.get("dry"): return {"would_set": os.path.join(bridge.folder(m), "on"), "to": not a.get("off")}
+    if not os.path.isdir(m): raise BlError("%s does not exist yet" % m, "`bl deploy` first")
+    return {"listening_from_next_start": bridge.enable(m, not a.get("off")), "folder": bridge.folder(m)}
+
+
 # ---------------------------------------------------------------- a test run in the game
 
 @command("run", "One unattended test run in the game: writes the test words, starts the game silently, waits for the end marker, collects the log.",
