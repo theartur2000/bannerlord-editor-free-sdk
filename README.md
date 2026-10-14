@@ -1,118 +1,119 @@
 # Bannerlord editor-free SDK
 
-Python tools that write Mount & Blade II: Bannerlord's asset and scene files directly, without the Modding Kit editor.
-Give it PNG, FBX, glTF or PSK files and it produces the `.tpac` packages and `.rdc` caches the game loads from your own
-module. Give it arrays and it writes a whole scene: terrain, navmesh, texture layers, entities, spawn paths.
+Python tools for making Mount & Blade II: Bannerlord mods without opening the Modding Kit editor.
 
-The editor's Resource Browser import takes seconds to minutes per asset and needs a person at the mouse. These scripts
-take seconds per asset and run unattended, which is what makes a mod with tens of thousands of assets practical.
+They write the game's own files directly: asset packages (`.tpac`), runtime caches (`.rdc`) and whole scenes
+(terrain, navmesh, entities). You give them PNG, FBX, glTF or PSK files, or plain arrays for a terrain, and you get
+files the game loads from your module.
 
-**No game content is included.** Everything is read from, and generated against, your own install. The screenshots
-in this page show the games running; their models and textures are not in the repository.
+![A generated battle map running in the game](docs/images/valley.jpg)
 
-![A generated valley in the unmodified game](docs/images/valley.jpg)
+*A battle map made entirely by these tools, running in the unmodded game. It comes from my
+[Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields) mod.*
 
-*A battlefield generated with the scene tools by the [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields) mod, running
-in the unmodified game. More under "Scenes and generated battlefields".*
+## Why
 
-## What it does
-- **Writes assets:** textures (BC1, BC3, BC4, BC5, BC7, RGBA8), materials, static and skinned meshes, skeletons with
-  ragdoll physics, skeletal animations, animation clips and their runtime caches.
-- **Writes scenes:** `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays, layer masks and entity lists,
-  with a shipped scene as the template for texture layers and atmosphere. The readers rebuild the game's own files byte
-  for byte.
-- **Reads what the game ships:** the campaign map as a height and biome field, every battle scene and how it places its
-  rocks, and the geometry of any shipped mesh (used to fit rocks to the ground so nothing hangs in the air).
-- **Custom models and textures in scenes:** a stage of your own textures, materials and models (PSK or FBX), terrain
-  layers painted with them, models placed as entities, the ground raised under them as their collision.
-- **Checks them before the game does:** validators for the faults the native client turns into crashes or freezes
-  (bone counts, the hit-IK rule, clip name length, clip partners, `project.mbproj` registration, monster bones).
-- **Installs safely:** backup, manifest and one-command revert; refuses to run while the game is open.
-- **Packs:** merges thousands of small packages into a few. On the author's mod, 34,000 assets went into 26 packages and
-  package loading went from 25.7 s warm (280 s cold) to 5.6 s.
-- **Tests itself against your install:** `python sdk/selftest.py` rebuilds Native's own packages and compares the bytes.
-- **Extras, as reference material:** PowerShell scripts for unattended game test runs (`harness/`) and minidump and
-  Ghidra helpers for finding native crashes (`dump/`).
+I was porting Borderlands 2 content into Bannerlord and ended up with about 34,000 assets. The editor imports them
+one at a time, by hand, and each one takes anywhere from seconds to minutes. So I worked out the file formats and
+scripted the whole thing. A script does an asset in seconds and nobody has to sit there clicking.
+
+There are no game files in this repo. Everything is read from your own install when you run it.
+
+## What it can do
+
+- Write textures, materials, static and skinned meshes, skeletons with ragdolls, animations and animation clips.
+- Write a whole scene from arrays: heights, ground texture layers, entities, navmesh, spawn paths. It borrows the
+  texture layers and lighting from a scene the game ships.
+- Read what the game ships: any mesh by name, every battle scene and where it puts its rocks, and the campaign map
+  as a height and terrain grid.
+- Put your own models and textures into a scene.
+- Check assets for the mistakes that crash or freeze the game (too many bones, clip names that are too long, and
+  so on) before the game ever sees them.
+- Install into your module with a backup and a one-command undo. It refuses to run while the game is open.
+- Merge thousands of small packages into a few. On my mod that took loading from 25.7 s (280 s on a cold start)
+  down to 5.6 s.
+- Test itself: `python sdk/selftest.py` rebuilds the game's own packages and checks the result is byte-identical.
+
+There are also two folders of extras: `harness/` (PowerShell scripts that run the game unattended for testing) and
+`dump/` (helpers for reading crash dumps and for Ghidra).
 
 ## Quick start
+
 ```powershell
 pip install -r requirements.txt
-python sdk/selftest.py                                  # reads your install, changes nothing in it
+python sdk/selftest.py                                  # reads your install, changes nothing
 $env:BANNERLORD_MODULE_DIR = "<game>\Modules\MyMod"
 python sdk/install.py texture rock_d.png                # stage a texture
-python sdk/install.py verify stage                      # run the validators
+python sdk/install.py verify stage                      # check it
 python sdk/install.py install --dry                     # see what would be copied where
 ```
 
 ## Status
-Written against Bannerlord v1.4.8.119303 (Steam, Windows, single player). Other versions are unverified. The formats are
-verified by byte-identical round trips against the game's own files (see "Self-test"). The original asset scripts built a
-large mod that runs in game. Of this packaged copy, the scene side has been run in the unmodified game (generated
-battlefields, 200 against 200, custom textures and models: see below); the asset commands of `sdk/install.py` have
-passed the self-test but have not been run in the game from this copy.
 
-## Scenes and generated battlefields
-The first mod built on the scene tools has its own repository:
-**[Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)**. It invents a battlefield from a few rules (biome, how rugged, how wooded, river or
-sea) and writes a scene folder the game loads; nothing in it is hand-placed. It has a Python generator built on this
-SDK and the same generator in C# inside the game, where every campaign battle gets a new field in under two seconds.
-Until 2026-10-12 its source was the `demos/` folder here.
+Written for Bannerlord v1.4.8.119303 (Steam, Windows, single player). I haven't tried other versions, and a game
+update can move things.
+
+The formats are checked by rebuilding the game's own files byte for byte (see "Self-test"). The scene tools have run
+in the unmodded game: generated battle maps, 200 against 200 battles, custom textures and models. My original asset
+scripts built a large mod that runs in game. The asset commands in this cleaned-up copy pass the self-test, but I
+have not yet run their output in the game.
+
+## Scenes and the battlefield mod
+
+The first thing I built on the scene tools is
+[Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields): a mod that generates a
+new battle map for every campaign battle. It has its own repo and uses this one as a submodule.
 
 | | |
 |---|---|
-| ![Steppe valley](docs/images/steppe.jpg) | ![River crossing](docs/images/crossing.jpg) |
+| ![Steppe](docs/images/steppe.jpg) | ![River crossing](docs/images/crossing.jpg) |
 | ![Mountain shelf in winter](docs/images/snow.jpg) | ![Desert](docs/images/desert.jpg) |
 
-What it takes from the SDK:
-- **The scene folder:** `sdk/scenebuild.py` writes `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays,
-  layer weights and entity lists, with a shipped scene as the template for texture layers and atmosphere.
-- **Natural shapes:** `sdk/terraform.py` has the noise, domain warping, stream-power and thermal erosion, Poisson-disk
-  scatter and the small relief quilted from shipped battlefields.
-- **What the shipped scenes do:** `sdk/catalog.py` measures which rock each biome uses, how big, how deep and turned
-  which way; `Template.paint_stats` measures how strongly a shipped scene paints each ground layer.
-- **Rocks that sit in the ground:** `sdk/meshread.py` reads the real mesh of a rock and `sdk/rockfit.py` fits it to the
-  terrain and banks earth over its open edges, never above the rock's own surface.
-- **The campaign map as rules:** `sdk/worldmap.py` gives height, biome and water at any spot of the map.
+It's a good example of what the scene tools do:
 
-The same generator fed a palette of custom ground textures, rocks and plants (`sdk/assetpack.py`, `sdk/psk.py`) makes
-a field with nothing of Bannerlord's in it. The mod's worked example reads Borderlands 2 models and textures from
-umodel exports of your own copy of that game:
+- `sdk/scenebuild.py` writes the scene folder (`scene.xscene`, `terrain.bin`, `navmesh.bin`) from arrays.
+- `sdk/terraform.py` has the terrain building blocks: noise, warping, erosion, scattering.
+- `sdk/catalog.py` measures how the game's own maps use each rock and paint each ground layer.
+- `sdk/meshread.py` and `sdk/rockfit.py` read a rock's real shape and sit it into the ground.
+- `sdk/worldmap.py` reads the campaign map: height, terrain type and water at any spot.
+- `sdk/assetpack.py` and `sdk/psk.py` bring in your own textures and models.
 
-![A field built only from Borderlands 2 models and textures](docs/images/bl2field.jpg)
+That last part is how this map was made. It uses only Borderlands 2 models and textures, read from my own copy of
+that game:
 
-How the fields are built, with every measurement, is in the mod's
-[BATTLEFIELDS.md](https://github.com/theartur2000/bannerlord-procedural-battlefields/blob/main/docs/BATTLEFIELDS.md).
+![A map built only from Borderlands 2 assets](docs/images/bl2field.jpg)
 
-### Engine rules found while building this
-Each of these cost a crash or a black screen to find; the tools now follow them.
-- **16 layer slots:** a terrain node always holds 16 weight slots, however few layers the scene has. With fewer, the
-  game reads past the node and now and then crashes on load.
-- **Late scene folders:** a scene folder that did not exist when the game started cannot be loaded; one that existed
-  can be rewritten while the game runs.
-- **One-sided rocks:** most shipped rocks are open shells. The shipped scenes turn every cliff piece the same way on a
-  slope (yaw = downhill + 90 degrees) and still leave about a third of the rim in the air, out of sight.
-- **`AssetSources`:** the game reads a module's `Assets` folder and its caches only if the module also has an
-  `AssetSources` folder.
-- **Terrain shader cache:** the game keeps the terrain shader it compiled per module and scene name under
-  `ProgramData`. Change a scene's layers and the old shader stays: clear it (the mod's `tools/install.py` does).
-- **Area map `none`:** a terrain layer without an area map must name it `none`; an empty name paints the terrain black.
-- **Winding:** an Unreal mesh mirrored into the game's right-handed space keeps its triangle order.
-- **Held terrain files:** a scene's `terrain.bin` stays open, read-shared, from its first load until the game exits.
-  A scene folder can be rewritten before its first load in a session, not after.
-- **Empty scene files are enough at startup:** a folder with zero-byte `scene.xscene`, `terrain.bin` and
-  `navmesh.bin` is known to the engine; the real files can be written any time before the scene is loaded.
-- **Campaign spawn lines:** the game picks the spawn path that best matches the direction the parties met from and
-  slides both deployments along it by where the party stands in the map tile.
-- **Earth over rock:** terrain standing above a rock's solid surface lets agents walk on under the ground.
+### Engine quirks I ran into
+
+Every one of these cost me a crash or a black screen. The tools handle them now, but if you write scenes yourself
+you will want to know.
+
+- A terrain node needs 16 layer weight slots, even if the scene has fewer layers. With fewer, the game sometimes
+  crashes on load.
+- A scene folder that didn't exist when the game started can't be loaded. One that did exist can be rewritten while
+  the game runs. Empty `scene.xscene`, `terrain.bin` and `navmesh.bin` files are enough at startup.
+- Once a scene has been loaded, the game keeps its `terrain.bin` open until it exits. You can rewrite a scene before
+  its first load in a session, but not after.
+- The game only reads a module's `Assets` folder if the module also has an `AssetSources` folder.
+- The game caches the terrain shader per module and scene name under `ProgramData`. If you change a scene's layers,
+  delete that cache or the ground goes black or gets the wrong textures.
+- A terrain layer with no area map has to say `none`. An empty name paints the terrain black.
+- Most of the game's rocks are open shells with no back. The game's own maps turn cliff pieces the same way on a
+  slope (yaw = downhill + 90 degrees) and still leave about a third of the rim hanging in the air where you can't
+  see it.
+- If terrain sits above a rock's solid surface, soldiers can walk under the ground.
+- A mesh from Unreal, mirrored into Bannerlord's coordinate system, keeps its triangle order.
+- In a campaign battle the game picks the spawn path that best matches the direction the two parties met from, then
+  slides both armies along it depending on where the party stands in the map tile.
 
 ## Where this is going
-This repository is growing from an asset SDK into a headless Bannerlord editor: scenes, terrain, a bridge into the running engine,
-and one command-line tool and MCP server for agents. See [docs/ROADMAP.md](docs/ROADMAP.md). The battlefield generator
-above is the first tech demo: a Python reference built on the SDK, and its port inside the game that makes a new field
-for every campaign battle.
+
+I want this to grow into a full headless Bannerlord editor: scenes, terrain, a bridge into the running engine, and
+one command-line tool that an AI agent can drive. The plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Background reading
-The formats and the engine rules behind the validators are written up in the
+
+I wrote up the formats and the engine rules in the
 [universal-modder](https://github.com/rehan-remade/universal-modder) knowledge base:
 [editor-free assets](https://github.com/rehan-remade/universal-modder/blob/main/knowledge/techniques/editor-free-bannerlord-assets.md),
 [custom races and creatures](https://github.com/rehan-remade/universal-modder/blob/main/knowledge/techniques/bannerlord-custom-races-and-creatures.md),
@@ -121,58 +122,59 @@ The formats and the engine rules behind the validators are written up in the
 [the Borderlands 2 conversion this code came from](https://github.com/rehan-remade/universal-modder/blob/main/knowledge/games/mount-and-blade-ii-bannerlord/bannerlord-borderlands-2-total-conversion.md).
 
 ## Requirements
-- Python 3.10+ and `numpy` (`pip install -r requirements.txt`). LZ4 and xxHash64 are small pure-Python
-  implementations, PNG reading and writing is in `sdk/pngio.py`. `Pillow` is needed only for pictures: previews of
-  terrains and battlefields, and `sdk/assetpack.py` (it resizes and converts source textures).
-- Mount & Blade II: Bannerlord on Windows. The Modding Kit is **not** needed.
-- For `dump/`: `pip install minidump`; Ghidra and JDK 21 only for `RE.java`.
-- For `harness/`: PowerShell 5.1 and a matching C# part in your module (not included, see "Harness").
+
+- Python 3.10+ and `numpy` (`pip install -r requirements.txt`). `Pillow` is only needed for pictures: terrain
+  previews, and `sdk/assetpack.py`, which resizes and converts textures.
+- Bannerlord on Windows. You do **not** need the Modding Kit.
+- For `dump/`: `pip install minidump`. Ghidra and JDK 21 only if you use `RE.java`.
+- For `harness/`: PowerShell 5.1 and a small C# part in your own module (see "Harness").
 
 ## Setup
-The SDK reads its paths from `sdk/config.py`, which reads these environment variables:
+
+The SDK gets its paths from these environment variables (`sdk/config.py` reads them):
 
 | variable | meaning | default |
 |---|---|---|
 | `BANNERLORD_DIR` | the game install (holds `bin\` and `Modules\`) | the standard Steam path, if it exists |
-| `BANNERLORD_MODULE_DIR` | the module you are building, `<game>\Modules\<YourModule>`; required by install, revert and pack commands | none |
+| `BANNERLORD_MODULE_DIR` | the module you are building, `<game>\Modules\<YourModule>`; needed by install, revert and pack | none |
 | `MODULE_ASSET_SUB` | sub-folder of the module's `Assets` that holds this SDK's packages | `mymod` |
-| `BANNERLORD_SDK_HOME` | root of every folder the SDK writes to by itself (see "Where files go") | `%LOCALAPPDATA%\bannerlord-sdk`, else `~/.bannerlord-sdk` |
-| `SDK_STAGE_DIR` | where writers stage output before install | `<SDK home>\stage` |
-| `SDK_BACKUP_DIR` | where install keeps backups and manifests | `<SDK home>\backup` |
-| `SDK_LOCK_FILE` | install, revert and pack refuse while it names another owner | `<SDK home>\GAME_LOCK` |
+| `BANNERLORD_SDK_HOME` | where the SDK keeps everything it writes (see "Where files go") | `%LOCALAPPDATA%\bannerlord-sdk`, else `~/.bannerlord-sdk` |
+| `SDK_STAGE_DIR` | where output is staged before install | `<SDK home>\stage` |
+| `SDK_BACKUP_DIR` | where install keeps backups | `<SDK home>\backup` |
+| `SDK_LOCK_FILE` | install, revert and pack refuse to run while someone else holds this lock | `<SDK home>\GAME_LOCK` |
 
 ```powershell
 $env:BANNERLORD_MODULE_DIR = "C:\Program Files (x86)\Steam\steamapps\common\Mount & Blade II Bannerlord\Modules\MyMod"
-python sdk/config.py        # prints what the SDK resolved
+python sdk/config.py        # prints the paths it found
 python sdk/selftest.py      # needs only BANNERLORD_DIR
 ```
 
-Every script runs from any folder (`python sdk/tpac.py ...`) or as a module from this folder
-(`python -m sdk.tpac ...`). `python sdk/<script>.py` with no arguments prints its commands.
+Scripts run from any folder (`python sdk/tpac.py ...`). Run one with no arguments to see its commands.
 
 ## Where files go
-None of the working folders of the SDK, the harness or the Ghidra helpers defaults to the current directory. They all sit under one
-per-user folder, the SDK home: `%LOCALAPPDATA%\bannerlord-sdk`, or `~/.bannerlord-sdk` when `LOCALAPPDATA` is not set.
-Set the environment variable `BANNERLORD_SDK_HOME` to use another root (an absolute path outside any repository).
-`python sdk/config.py` prints the folders in use.
+
+Nothing is written to the current folder. Everything goes under one per-user folder, the SDK home:
+`%LOCALAPPDATA%\bannerlord-sdk`, or `~/.bannerlord-sdk` if `LOCALAPPDATA` isn't set. Set `BANNERLORD_SDK_HOME` to
+move it. `python sdk/config.py` shows what's in use.
 
 | folder under the SDK home | holds | written by |
 |---|---|---|
 | `stage` | staged packages and caches, `_selftest`, `_native_check`, `_cache` | `sdk/` tools |
-| `backup` | backups of module files that `install` replaced, with manifests (converted game content) | `sdk/install.py`, `sdk/tpac_pack.py` |
+| `backup` | backups of module files that `install` replaced (these are converted game content) | `sdk/install.py`, `sdk/tpac_pack.py` |
 | `GAME_LOCK` | the lock file | `harness/game_lock.ps1`, read by `sdk/` |
 | `out` | test run results, logs and moved-aside saves | `harness/` |
-| `config_backup` | copies of your game's launcher and engine configs while a test run is active | `harness/bannerlord_test_config.ps1` |
+| `config_backup` | copies of your game's launcher and engine configs during a test run | `harness/bannerlord_test_config.ps1` |
 | `re_out`, `re_proj` | Ghidra output (decompiled game code) and Ghidra projects (which hold a copy of the game's DLL) | `dump/re.ps1`, `dump/RE.java` |
 
-A single folder can still be moved with `SDK_STAGE_DIR`, `SDK_BACKUP_DIR`, `SDK_LOCK_FILE`, `SDK_CONFIG_BACKUP` (config
-backup), `RE_OUT_DIR`, `RE_DECOMP_DIR`, `RE_PROJECT_DIR` or the `-OutDir` parameter of the harness scripts. Several of
-these folders hold copies of the game's content or code, so keep every override outside any repository too. The
-.gitignore of this repository lists the same names as a second safeguard.
+You can move single folders with `SDK_STAGE_DIR`, `SDK_BACKUP_DIR`, `SDK_LOCK_FILE`, `SDK_CONFIG_BACKUP`,
+`RE_OUT_DIR`, `RE_DECOMP_DIR`, `RE_PROJECT_DIR`, or the `-OutDir` parameter of the harness scripts. Some of these
+folders end up holding copies of the game's content or code, so keep them out of any git repo. The `.gitignore` here
+lists the same names as a backstop.
 
 ## Commands
-`sdk/install.py` is the front door. Writers stage into `<SDK home>\stage\<name>` (default `work`); `install` copies a stage
-into the module.
+
+`sdk/install.py` is the one you'll use most. The writers put their output in `<SDK home>\stage\<name>` (default
+`work`), and `install` copies a stage into your module.
 
 ```powershell
 python sdk/install.py texture rock_d.png                       # BC1/BC3 by alpha; _n becomes BC5, _s BC1, _h BC4
@@ -183,9 +185,9 @@ python sdk/install.py anim creature_walk.fbx                   # single-take FBX
 python sdk/install.py owner "<SDK home>\stage\work\Assets\creature_walk_geo.tpac" --skeleton <skeleton guid>
 python sdk/install.py clip creature_walk_clip creature_walk 31 # clip on that animation, 31 frames at 30 fps
 python sdk/install.py clip-cache "creature_walk_clip"          # its RuntimeDataCache entry, no editor load needed
-python sdk/install.py verify stage                             # validators on the stage
+python sdk/install.py verify stage                             # run the checks on the stage
 python sdk/install.py install --dry                            # what would be copied where
-python sdk/install.py install                                  # backup + manifest, then copy
+python sdk/install.py install                                  # backup, then copy
 python sdk/install.py revert                                   # undo the newest install
 python sdk/install.py status
 ```
@@ -218,24 +220,24 @@ python sdk/install.py status
 | `dump/` | minidump helpers and the headless Ghidra batch script |
 
 ## Templates
-Two writers patch an existing record instead of building one from nothing. Both start from your own Native
-module, read at run time and never written back:
 
-- **Clips** (`clip`): a plain Native clip record, the most common shape among Native clips that have no sound,
-  voice, facial, partner, follow-up or combat parameter and no lists (on the author's install: `chicken_run_gait`
-  in `animations_animals`).
-- **Materials** (`material`, static and skinned): head, parameters and alpha reference from a plain Native
-  `pbr_shading` record without material flags and vertex layout (on the author's install: `weapons1.lod` in
-  `EmAssetPackages\mat0\materials`); the vertex layout, blend mode and shader flags are then set by the SDK, so the
-  result does not depend on which Native record was picked.
+Two of the writers don't build a record from nothing. They copy a plain one from the game and patch it. Both read
+it from your own Native module at run time and never write it back.
 
-`python sdk/templates.py` prints what was picked on your install. If a future game version changes the shape
-and nothing qualifies, the command stops and asks for `--template <package>`: a one-clip package or a material
-package written by the editor or by this SDK. Nothing is shipped from the game or from the author's module.
+- Clips (`clip`): a plain Native clip with no sound, voice, facial, partner, follow-up or combat settings. On my
+  install it picks `chicken_run_gait` from `animations_animals`.
+- Materials (`material`): the head, parameters and alpha reference of a plain Native `pbr_shading` material. On my
+  install it picks `weapons1.lod` from `EmAssetPackages\mat0\materials`. The SDK then sets the vertex layout, blend
+  mode and shader flags itself, so it doesn't matter which one was picked.
+
+`python sdk/templates.py` shows what it picked on your install. If a game update changes the shape and nothing fits,
+the command stops and asks for `--template <package>`: a one-clip package or a material package made by the editor
+or by this SDK.
 
 ## Self-test
-`python sdk/selftest.py` needs only your install and writes only to `_selftest` inside the stage folder (`<SDK home>\stage\_selftest` by default). Result on the
-author's machine, game v1.4.8.119303, default settings (42 s), condensed:
+
+`python sdk/selftest.py` only needs your install and only writes to `<SDK home>\stage\_selftest`. This is what I get
+on game v1.4.8.119303 with default settings (42 s, shortened):
 
 ```
 PASS packages   200 of 200 sampled Native packages rebuild byte-identical (18495 items; AssetPackages 50/50, EmAssetPackages 150/150)
@@ -246,104 +248,104 @@ PASS synthetic  14 of 14 checks
 SUMMARY: 5 PASS, 0 FAIL
 ```
 
-- `packages`: each sampled Native `.tpac` is parsed and written again with the SDK's package writer; the bytes
-  must equal the file. `--full --max-package-mb 100000` does all of them: 1188 of 1188 (91,394 items, 86 s).
-- `textures`: BC4, BC5, BC7, DXT1, DXT5 and RGBA8 textures with inline pixels. The pixel-hash rule fails on 4
-  of 24 (BC4 and BC5 maps; the reason is unknown), so the check asks for 80 percent.
-  BC7 has no decoder here, so only its record, hash and size are checked. Native also uses DXT3, BC6H, R8 and
-  float formats, which the SDK does not write and the test skips.
-- `caches`: Native clips that have no root channel (45) or carry raw key channels (26) use layouts the SDK does
-  not produce; they are counted, not hidden.
-- `synthetic`: a made-up skeleton, animation, clip, clip cache, texture, material and mesh are written, read back and
-  validated; then four planted faults (65 bones, the IK rule, a 64 character clip name, a made-up `project.mbproj`
-  id) must each be caught.
+- `packages`: each sampled Native `.tpac` is read and written again with the SDK's writer, and the bytes have to
+  match the file. `--full --max-package-mb 100000` does all of them: 1188 of 1188 (91,394 items, 86 s).
+- `textures`: BC4, BC5, BC7, DXT1, DXT5 and RGBA8 textures with inline pixels. The pixel-hash rule fails on 4 of 24
+  (BC4 and BC5 maps) and I don't know why yet, so the check only asks for 80 percent. There's no BC7 decoder here, so
+  for BC7 only the record, hash and size are checked. Native also uses DXT3, BC6H, R8 and float formats. The SDK
+  doesn't write those and the test skips them.
+- `caches`: Native clips with no root channel (45) or with raw key channels (26) use layouts the SDK doesn't
+  produce. They are counted in the output, not hidden.
+- `synthetic`: a made-up skeleton, animation, clip, clip cache, texture, material and mesh are written, read back
+  and checked. Then four deliberate mistakes (65 bones, the IK rule, a 64 character clip name, a made-up
+  `project.mbproj` id) each have to be caught.
 
-## What is verified and what is not
-Verified, by byte-identical round trips and comparisons on the author's machine, **for game v1.4.8.119303 only**:
-the container and cache formats, textures, materials, skeletons and clip caches (above, and in the editor-free assets
-note: 161 of 166 editor textures, 103 of 103 editor clip caches, all 150 Native asset packages). The content
-written by this packaged copy was compared with the author's original scripts on a clip, a movement clip, two
-materials, a mesh and an animation: the same bytes apart from random ids and the source-path string for the
-clips and materials, and the same decoded mesh and animation data. The record hash of a clip is now the correct
-xxh64; the originals kept the template's stale one, which the engine does not check. Texture mips are an
-area average: within one level of the original for opaque power-of-two sizes, further apart at other sizes and
-with alpha, where the original's 8-bit premultiplied resize was the less accurate one.
+## What's checked and what isn't
 
-Not verified: other game versions (offsets and layouts may move; treat every address in the notes as stale after
-an update), this packaged copy running inside the game (the originals were), the harness scripts against a real
-module (the dry run works), multiplayer and anti-cheat (single player only, never involved), and the items in
-the "Not verified" section of the editor-free assets note.
+Checked, on my machine, for game v1.4.8.119303 only:
 
-Things that stay specific to a workflow rather than generic: skinned FBX bones must be named
-`bip01_<name>_<index>`; the minimal ragdoll `skeleton` writes is a starting point, not a tuned one; clip caches
-are written for clips with a root position channel.
+- The container and cache formats, textures, materials, skeletons and clip caches rebuild byte for byte (above). The
+  editor-free assets note under "Background reading" has more: 161 of 166 editor textures, 103 of 103 editor clip
+  caches, all 150 Native asset packages.
+- I compared this cleaned-up copy against my original scripts on a clip, a movement clip, two materials, a mesh and
+  an animation. Same bytes, apart from random ids and the source-path string, and the same decoded mesh and
+  animation data.
+- Two small differences from the originals. The clip record hash is now the correct xxh64 (the originals kept the
+  template's old one, which the engine doesn't check). Texture mips are a plain area average, which is within one
+  level of the originals for opaque power-of-two textures and a bit further off for other sizes and for alpha.
+
+Not checked:
+
+- Other game versions. Offsets and layouts can move, so treat every address in the notes as stale after an update.
+- The asset commands of this copy running in the game (the originals did).
+- The harness scripts against a module other than my own.
+- Multiplayer and anti-cheat. This is single player only.
+
+Things that are specific to how I work and you may need to change: skinned FBX bones must be named
+`bip01_<name>_<index>`, the ragdoll that `skeleton` writes is a minimal starting point, and clip caches are only
+written for clips that have a root position channel.
 
 ## Harness
-`harness/` drives the game through a module-side "autostart" file and test words. It needs a matching C# part in the
-module under test; the GenFields demo module has one (below), and the notes under "Background reading" describe what
-the original one did.
 
-How it works: the game is launched with
-`/singleplayer _MODULES_*Native*SandBoxCore*CustomBattle*<YourModule>*_MODULES_` so the launcher's saved mod
-list is untouched. `night_test.ps1` writes the test words (`plain fight quit ...`) to an autostart file; your
-module's C# reads it at startup, runs the scenario, writes an end marker (default `AUTOTEST_DONE`) to its log and
-quits. The harness waits for that marker, collects the log lines of this run and the Windows crash events, runs
-once more if the first attempt failed, and can record video through a script you pass in (`-Record`).
-`bannerlord_test_config.ps1` switches the game to a silent windowed setup and restores the launcher config on
-exit (`LauncherData.xml`, `engine_config.txt`, `BannerlordConfig.txt` byte for byte; the one exception is a
-backup that itself holds a test leftover with sound off, which it repairs); `game_lock.ps1` holds a lock file so
-two sessions never run the game at once, and the SDK's install and pack commands honour the same file.
-`player_checks.ps1` runs named checks from a JSON file (`checks.example.json`) and prints PASS and FAIL lines.
+`harness/` runs the game unattended so a test doesn't need anyone at the keyboard. It needs a small C# part in the
+module you are testing. The [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)
+mod has a complete one (`mod/GenFields/src/AutoTest.cs`) that you can copy from.
+
+How it works:
+
+- The game is started with `/singleplayer _MODULES_*Native*SandBoxCore*CustomBattle*<YourModule>*_MODULES_`, so the
+  mod list saved in your launcher is left alone.
+- `night_test.ps1` writes test words (like `plain fight quit`) to an autostart file. Your module reads that file at
+  startup, runs the scenario, writes an end marker (default `AUTOTEST_DONE`) to its log and quits.
+- The harness waits for the marker, collects the log lines and any Windows crash events, and tries once more if the
+  first run failed. It can record video through a script you pass with `-Record`.
+- `bannerlord_test_config.ps1` switches the game to a silent windowed setup for the run and puts your own settings
+  back afterwards.
+- `game_lock.ps1` holds a lock file so two test sessions never start the game at the same time. The SDK's install
+  and pack commands respect the same lock.
+- `dialogs.ps1` answers the three popups that would stall a run: "enable safe mode" after a crash (No), the shader
+  cache notice (OK) and the crash report prompt (No). It sends no other input.
+- `player_checks.ps1` runs named checks from a JSON file (`checks.example.json`) and prints PASS and FAIL lines.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File harness\night_test.ps1 -Module MyMod -Words "plain fight quit" `
-    -LogFile "$env:BANNERLORD_MODULE_DIR\mymod_log.txt" -DryRun       # without the game: checks the harness itself
+    -LogFile "$env:BANNERLORD_MODULE_DIR\mymod_log.txt" -DryRun       # checks the harness without starting the game
 ```
 
-The harness stops only the process it started and reports any change in the save folder (new files are moved aside,
-never deleted). `dialogs.ps1` answers the three prompts that would stall an unattended run: "enable safe mode" after a
-crash (No), the shader cache notice (OK) and the crash report prompt (No). It sends no other input.
-
-A complete module-side example is the [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields) mod (`mod/GenFields`): its `AutoTest.cs` reads
-the autostart words, opens a Custom Battle on a named scene, moves the player through a list of viewpoints taking
-screenshots, lets the armies fight for a set time and quits. Its `tools/test.ps1` runs it with only that module added
-to the game.
+The harness only ever stops the game process it started itself. If a run creates new save files, it moves them aside
+and tells you. It never deletes them.
 
 ## Crash dumps and reverse engineering
-`dump/` holds the minidump helpers (`threads.py`, `unwind.py`, `loc.py`, `rd.py`, `huge.py`, `vt.py`) and
-`RE.java` with `re.ps1`, a batch script for headless Ghidra. `dump/README.txt` has the usage.
 
-**Warning: decompiled game code.** The `RE.java` commands `decomp`, `decompall` and `insnall` write decompiled game code to
-disk. `decompall <dir> <shards>` decompiles every function of the DLL into `<dir>\shard_NN.c`; `insnall <file> <regex>` lists
-every instruction matching a regex, with its function name, with no limit. Their output is the game's code, not yours. Keep it
-outside any repository, never commit it, and never publish or share it. By default `decomp` writes to `<SDK home>\re_out\decomp`,
-which is outside any repository; for `decompall` and `insnall` pass an absolute path of your own that is also outside any
-repository. Both commands print a warning into the output file. Describe the logic in your own words and name the symbols
-instead.
+`dump/` has helpers for reading minidumps (`threads.py`, `unwind.py`, `loc.py`, `rd.py`, `huge.py`, `vt.py`) and
+`RE.java` with `re.ps1`, a batch script for headless Ghidra. Usage is in `dump/README.txt`.
+
+**Careful with decompiled game code.** The `RE.java` commands `decomp`, `decompall` and `insnall` write decompiled
+game code to disk. That output is TaleWorlds' code, not yours. Keep it outside any git repo and don't commit, publish
+or share it. `decomp` writes to `<SDK home>\re_out\decomp` by default, which is outside any repo. For `decompall`
+and `insnall` you pass the path yourself, so pick one that is too. If you want to write about what you found,
+describe the logic in your own words.
 
 ## Files
+
 ```
-sdk/            the library and command-line tools (listed above)
+sdk/            the library and command-line tools
 docs/           ROADMAP.md, images/
-harness/        night_test.ps1, run_bannerlord_test.ps1, bannerlord_test_config.ps1, game_lock.ps1, dialogs.ps1,
-                player_checks.ps1, checks.example.json
-dump/           minidump helpers, RE.java, re.ps1, README.txt
-requirements.txt
-LICENSE
-.gitignore
+harness/        scripts that run the game unattended
+dump/           crash dump helpers, RE.java, re.ps1
 ```
 
 ## Credits
-- **TaleWorlds Entertainment** make Bannerlord and the Modding Kit; the game and everything in it belong to them.
-  Every format here was worked out from files and binaries a player's own install holds.
-- **TpacTool** by szszss showed that `.tpac` is a readable container; the reader and writer here were written
-  from the editor's output and Native's own packages.
-- **LZ4** and **xxHash** are algorithms by Yann Collet; the block decoder and encoder and the 64-bit hash here are
-  small independent implementations of the published formats.
-- **Ghidra**, **ILSpy** and the python **minidump** package were used to read the engine and the dumps.
-- Background: the code was written while converting Borderlands 2 content into Bannerlord, described under "Background reading";
-  none of that content is part of this repository.
-- Packaged by Claude Code (Opus 5.5 with Sonnet 5.5 helpers) from the author's project.
+
+- TaleWorlds Entertainment make Bannerlord and the Modding Kit. The game and everything in it is theirs. I worked
+  out the formats from the files and binaries in my own install.
+- [TpacTool](https://github.com/szszss/TpacTool) by szszss showed that `.tpac` could be read at all. The reader and
+  writer here were written from scratch against the editor's output and Native's packages.
+- LZ4 and xxHash are by Yann Collet. The versions here are small independent implementations of the published
+  formats.
+- Ghidra, ILSpy and the Python `minidump` package did a lot of the digging.
+- I built this with Claude Code. I decide what to build and test it in the game, and it writes most of the code.
 
 ## License
-MIT, see `LICENSE`.
+
+MIT.
