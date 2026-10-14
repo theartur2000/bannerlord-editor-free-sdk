@@ -3,7 +3,7 @@
 Goal: a full headless Bannerlord editor for doing anything in the game through agentic programming, ending with
 Bannerlord used as a game engine in its own right. This repository grows into it; the asset SDK is the first part.
 
-Status: a plan, written 2026-10-10. Nothing here is built yet except where it says "have".
+Status: a plan, written 2026-10-10 and updated as work lands. An item is built only where it says "have" or "done".
 
 The SDK comes first. Its first test is a separate, standalone tech-demo mod made only with it: battlefields generated from
 the spot on the world map where a battle starts ([BATTLEFIELDS.md](https://github.com/theartur2000/bannerlord-procedural-battlefields/blob/main/docs/BATTLEFIELDS.md), in the mod's own repository). The demo is not part of the SDK. It
@@ -11,7 +11,7 @@ decides which SDK pieces get built first, and it is finished when it needs nothi
 
 ## 1. What the official editor turned out to offer
 
-Checked on this machine, game v1.4.8.119303, by reading the editor build (`bin\Win64_Shipping_wEditor`) and our decompiled
+Checked on game v1.4.8.119303 by reading the editor build (`bin\Win64_Shipping_wEditor`) and the decompiled
 managed assemblies. **Nothing below was run.** These are names found in the binaries; step M0 is to try them.
 
 **Command-line switches in the editor's native DLL**
@@ -34,27 +34,27 @@ managed assemblies. **Nothing below was run.** These are names found in the bina
   automated light bakes (`do_full_bake_all_levels_automated`, `did_automated_gi_bake_finished`),
   terrain queries (`get_terrain_data`, `get_terrain_height`), `compile_terrain_shaders_dist`, `take_screenshot_from_string_path`,
   and `execute_command_line_command` (run any console command from code).
-- Not found: a managed "save scene" call. Saving has to be our own writer, or a native command we drive.
+- Not found: a managed "save scene" call. Saving needs a custom writer or a native command driven from outside.
 
 **What does not exist**
 - No headless or null-renderer mode in the editor build. Anything that runs the engine needs a window and a GPU.
   It does not need a person.
-- The dedicated server (a separate Steam tool, not installed here) is the engine without rendering. The managed code has
-  its switches (`/dedicatedcustomserver` and others). It may give us render-free simulation. Untested.
+- The dedicated server (a separate Steam tool) is the engine without rendering. The managed code has
+  its switches (`/dedicatedcustomserver` and others). It may provide render-free simulation. Untested.
 
 **How scenes are stored** (`Modules\<module>\SceneObj\<scene>\`)
-- `scene.xscene`: XML. Entities, transforms, scripts, tags, levels, terrain layers, environment. We can write this.
+- `scene.xscene`: XML. Entities, transforms, scripts, tags, levels, terrain layers, environment. Can be written directly.
 - `atmosphere.xml`: XML.
 - `terrain.bin`: a tagged chunk container (magic `ZGR6 RTRN`, version 2, chunks `MIDX`, `HGHT`, `NRML`, `WGHT`, `PHYM`, ...).
-  Same style as the formats we already cracked.
+  Same style as the asset formats already decoded.
 - `navmesh.bin` (magic `RNM1`), `flora.bin`, a `ShaderCache` folder.
 - `SceneEditData\<scene>\terrain_ed.bin`: the editor's source data for terrain (heightmap and layer painting).
 
 **Conclusion: build two halves, not one**
 - **Offline writers** (Python, no game running) for everything that is a file. Fast, testable by byte comparison, truly headless.
-- **An engine bridge** (a C# module plus a command channel) for everything the engine computes better than we could
-  reimplement: navmesh generation, light bakes, terrain shader compilation, physics cooking, the editor's own problem
-  check, screenshots, playtests. The engine becomes our build server.
+- **An engine bridge** (a C# module plus a command channel) for everything the engine computes better than a
+  reimplementation would: navmesh generation, light bakes, terrain shader compilation, physics cooking, the editor's own problem
+  check, screenshots, playtests. The engine becomes the build server.
 
 This avoids reimplementing a lighting baker and a navmesh generator, which would be most of the cost of "cloning the editor".
 
@@ -68,7 +68,7 @@ agent (Claude Code, any MCP client)
    +-- offline layer (Python)            reads and writes files, no game
    |     assets:  textures, materials, meshes, skeletons, animations, clips   [have]
    |     scenes:  xscene, atmosphere, terrain.bin, navmesh.bin, flora.bin     [to build]
-   |     data:    ModuleData XML (items, troops, settlements, cultures)       [partly, in the BL2 project]
+   |     data:    ModuleData XML (items, troops, settlements, cultures)       [partly, not yet in the SDK]  
    |     pack / validate / install / revert                                   [have]
    |
    +-- engine layer (C# module "Bridge" running inside the game or editor build)
@@ -84,7 +84,7 @@ Rules that keep it trustworthy:
 - Every writer proves itself by rebuilding the game's own files byte for byte (the existing self-test, extended per format).
 - Every engine job is unattended, has a timeout, and reports in a log the CLI parses.
 - Every game patch: run the self-test first. A failing format is reported by name instead of crashing a mod.
-- Read their binaries to learn behaviour; write our own code. No decompiled code in any repository.
+- Binaries are read to learn behaviour; all code is original. No decompiled code in any repository.
 
 ## 3. Workstreams
 
@@ -95,18 +95,18 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 |---|---|---|
 | Skinned FBX and glTF with any bone names (drop the `bip01_<name>_<index>` rule) | S | a Mixamo or Blender rig imports unchanged |
 | Missing texture formats (DXT3, BC6H HDR, R8, float) | S | self-test covers them |
-| Clips without a root channel, raw-key clips (71 Native clips we cannot read) | M | 297 of 297 Native clip caches round-trip |
+| Clips without a root channel, raw-key clips (71 Native clips the SDK cannot read) | M | 297 of 297 Native clip caches round-trip |
 | Physics shapes (collision bodies for props and items) | M | a new prop blocks agents and missiles without the editor |
 | Morph animations (faces), cloth | M each | on demand |
 | Particle systems, decals, prefabs with scripts | M | on demand |
-| Sound (FMOD banks) | have in the BL2 project | move into the SDK |
+| Sound (FMOD banks) | exists outside the SDK | move into the SDK |
 | Run the published SDK in game once, with a screenshot | S | README no longer says "not run in game" |
 
 ### B. Scenes (L, the main new work)
 | Step | What | Size | Done when |
 |---|---|---|---|
 | B1 | Read and write `scene.xscene` and `atmosphere.xml` | S | all 79 + 202 + 195 shipped scenes round-trip |
-| B2 | Edit an existing scene offline: add, move, remove entities, spawn points, tags | S | a shipped battle map with our props loads and plays |
+| B2 | Edit an existing scene offline: add, move, remove entities, spawn points, tags | S | a shipped battle map with added props loads and plays |
 | B3 | Decode `terrain.bin` (heights, normals, layer weights, physics materials) | M | every shipped `terrain.bin` rebuilds byte-identical |
 | B4 | Write terrain from a heightmap and layer masks | M | a Blender-sculpted terrain loads with correct collision and textures |
 | B5 | Navmesh: first through the engine bridge, later decode `navmesh.bin` | M | AI walks and fights on a generated scene |
@@ -164,7 +164,7 @@ itself a module that does this, and the editor has an `EditorGame`.
 | E3 | Own world map (B8) or no map at all |
 | E4 | A complete small game made only with the pipeline, as the proof |
 
-## 4. Things this makes possible (general Bannerlord, not BL2)
+## 4. Things this makes possible
 
 1. **A unique battlefield for every spot on the map.** The game reuses about 70 battle terrains. Generate the battlefield
    from the campaign map's own terrain where the armies met: that hill, that river, that forest.
@@ -208,27 +208,27 @@ M0 decides how much of B5 and B6 is "call the engine" and how much is "decode th
 - **The editor switches may not work in the shipped build.** They are TaleWorlds' internal jobs. M0 finds out.
 - **Terrain is the hard format.** Compressed chunks, level-of-detail data, shader caches per scene. If it resists, the
   fallback is scenes built on existing terrains, which is still most of the value.
-- **Licence and rules.** Formats learned from the user's own install, own code only, no game files or decompiled code
-  published. The Modding Kit's terms should be read before anything about its internals is published.
+- **Licence and rules.** Formats are learned from a retail install, all code is original, and no game files or decompiled code
+  are published. The Modding Kit's terms should be read before anything about its internals is published.
 - **Scope.** "Anything in the game" is open-ended. The order above delivers something usable at every milestone.
 
-## 7. Doing the engine's computation ourselves
+## 7. Replacing the engine's computation
 
 The two-halves design uses the engine as a build server. The longer aim is to need it for nothing. What each piece takes:
 
-| Computation | What the game ships that helps | Our own version | Size |
+| Computation | What the game ships that helps | Own implementation | Size |
 |---|---|---|---|
-| Navmesh generation | 19 of 98 shipped battle terrains are marked auto-generated, so the editor has a generator | Our own algorithm; it only has to produce a valid file and good paths, not match theirs. Terrain navmesh is the easy case: walkable by slope and water depth, then merge grid cells into polygons | M, after the `navmesh.bin` format |
+| Navmesh generation | 19 of 98 shipped battle terrains are marked auto-generated, so the editor has a generator | An original algorithm; it only has to produce a valid file and good paths, not match theirs. Terrain navmesh is the easy case: walkable by slope and water depth, then merge grid cells into polygons | M, after the `navmesh.bin` format |
 | Physics cooking | `PhysXCooking_64.dll` ships in `bin` | Call the same cooking library, or let the engine cook at load | S to M |
-| Terrain normals, levels of detail, material maps | all inside `terrain.bin` | Computed by us once the chunks are decoded | M |
-| Terrain shaders | 848 shader source files under `Shaders\Sources` (terrain ones included) and `d3dcompiler_47.dll`; the per-scene `ShaderCache` is a 28 KB header file, not compiled shaders | Generate the header ourselves; compile with the shipped compiler if needed | M |
-| Light and GI bake | none of the 67 shipped battle terrains that carry the flag has baked GI | Not needed for battlefields. For towns and interiors: our own probe baker, the largest single item | L or more |
+| Terrain normals, levels of detail, material maps | all inside `terrain.bin` | Computed by the SDK once the chunks are decoded | M |
+| Terrain shaders | 848 shader source files under `Shaders\Sources` (terrain ones included) and `d3dcompiler_47.dll`; the per-scene `ShaderCache` is a 28 KB header file, not compiled shaders | Generate the header directly; compile with the shipped compiler if needed | M |
+| Light and GI bake | none of the 67 shipped battle terrains that carry the flag has baked GI | Not needed for battlefields. For towns and interiors: a custom probe baker, the largest single item | L or more |
 | Scene optimisation, occlusion, flora billboards | native only | On demand | M each |
 
 Method: static reading in Ghidra (two analysed projects exist) plus the running editor as an oracle. Give the editor a
-known input (a flat terrain, one hill, one box), capture what it writes, and compare with our output. Hooks on the running
+known input (a flat terrain, one hill, one box), capture what it writes, and compare with the SDK's output. Hooks on the running
 process (Frida or a debugger) can dump the buffers at function boundaries when a file alone does not explain itself. This
-is single-player software on the owner's machine; nothing here touches multiplayer or anti-cheat.
+is single-player software running locally; nothing here touches multiplayer or anti-cheat.
 
 ## 8. Decisions taken (2026-10-10)
 
