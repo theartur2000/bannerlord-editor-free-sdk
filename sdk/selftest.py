@@ -1,6 +1,6 @@
 # Self-test: does this SDK read and write Bannerlord's formats correctly on YOUR game files? It needs only your own install
 # (BANNERLORD_DIR); nothing is written to the game folder, scratch output goes to <SDK_STAGE_DIR>/_selftest.
-#   python selftest.py [--limit 200] [--max-package-mb 300] [--textures 4] [--caches 300] [--skip a,b] [--full]
+#   python selftest.py [--limit 200] [--max-package-mb 300] [--textures 4] [--caches 300] [--physics 8] [--skip a,b] [--full]
 # Sections (each prints PASS or FAIL with counts):
 #   packages   parse each sampled Native .tpac and write it again with the SDK's package writer; the rebuilt bytes must equal
 #              the file (sha1). The sample is spread over AssetPackages and EmAssetPackages. --full: every package up to
@@ -15,13 +15,17 @@
 #   caches     Native clip caches ("Optimized animation"), with and without a root channel, with and without raw key channels: parse and
 #              re-pack byte-identical, size trailer follows the engine rule; any class that still fails is named with its count
 #   skeletons  Native human / horse / camel skeleton definition and user data re-pack byte-identical
+#   physics    Native physics shapes (collision bodies): up to --physics shapes per package decode and re-encode byte-identical (record,
+#              description, dynamic cook, static cook), their hashes and entry rows follow the SDK's rule, and build() rebuilds each of them
+#              from its description byte-identical (cooked PhysX data taken from the game shape); plus a made-up capsule and sphere shape
+#              written to a package and read back, and a made-up hull and mesh body that physics.encode() must refuse (no cooked data)
 #   synthetic  a tiny made-up skeleton, animation, clip, clip cache, texture, material and mesh written to a scratch folder,
 #              read back, and run through the validators, which must pass them and must catch four planted faults
 # Exit code 0 only when every section passes.
 import collections, glob, hashlib, math, os, random, shutil, struct, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import numpy as np
-import config, tpac, tw_formats, tpac_pack, sdk_skeleton, sdk_mesh, pngio
+import config, tpac, tw_formats, tpac_pack, sdk_skeleton, sdk_mesh, pngio, physics
 
 RESULTS = []
 
@@ -336,6 +340,45 @@ def section_skeletons():
            % (n, len(sdk_skeleton.NATIVE_SKELETONS), stats["definition identical"], stats["user data identical"], stats["tw_formats identical"]), notes)
 
 
+# ------------------------------------------------------------------------------------------------------------------ physics
+def section_physics(per_package):
+    t0 = time.time(); checks = []; notes = []
+    def check(name, ok, why=""):
+        checks.append((name, bool(ok)))
+        if not ok: notes.append("%s %s" % (name, why))
+    native = physics.native_packages("Native")
+    r = physics.check(native, per_package=per_package); b = physics.check_build(native, per_package=per_package)
+    ok = r["shapes"] > 0 and r["identical"] == r["shapes"] and b["shapes"] == r["shapes"] and b["identical"] == b["shapes"]
+    notes += ["round trip %s" % (r["failures"],)] * bool(r["failures"]) + ["rebuild %s" % (b["failures"],)] * bool(b["failures"])
+    try:
+        root = os.path.join(config.SDK_STAGE_DIR, "_selftest", "physics"); os.makedirs(root, exist_ok=True)
+        sh = physics.build("selftest_prop", [physics.capsule((0, 0, 0.3), (0, 0, 1.5), 0.25, "wood")], [physics.sphere((0.5, 0, 0.5), 0.2)], material="wood", source=bytes(range(16)))
+        out = physics.write_package(sh, root, force=True); res = list(physics.resources(out)); back = physics.decode_resource(res[0]) if len(res) == 1 else None
+        bad = physics.check_resource(res[0], stored=True) if res else ["no resource"]
+        check("made-up capsule and sphere written and read back", back is not None and back["name"] == "selftest_prop" and len(back["desc"]["capsules"]) == 1
+              and len(back["desc"]["spheres"]) == 1 and physics.encode(back)[0] == physics.encode(sh)[0] and not bad, bad)
+        bd = back["record"]["bounds"] if back else None
+        check("made-up bounds", bd is not None and np.allclose(bd["min"][:3], [-0.25, -0.25, 0.05]) and np.allclose(bd["max"][:3], [0.7, 0.25, 1.75]))
+        cube = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], float); pts = np.vstack([cube, [[0, 0, 0], [0.5, 0.2, 0.1]]]); F = physics.hull_triangles(pts)
+        e = np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1); _, cnt = np.unique(e, axis=0, return_counts=True)
+        vol = sum(np.dot(pts[t[0]], np.cross(pts[t[1]], pts[t[2]])) for t in F) / 6
+        check("hull of a cube is closed, outward, volume 8", len(F) == 12 and (cnt == 2).all() and abs(vol - 8) < 1e-5, (len(F), vol))
+        hm = physics.convex_hull(cube, ["wood"]); hb = physics.build("selftest_hull", manifolds=[hm]); mb = physics.build("selftest_mesh", manifolds=[physics.triangle_mesh(hm["vertices"][:, :3], hm["face_index"], ["wood"])])
+        check("hull and mesh bodies are refused without cooked data", all(physics.needs_cook(x) for x in (hb, mb)) and all(_raises(physics.encode, x) for x in (hb, mb)))
+    except Exception as ex:
+        import traceback
+        notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
+    good = sum(1 for _, k in checks if k)
+    report("physics", ok and good == len(checks) and checks != [], "%d Native physics shapes in %d packages (up to %d per package): round trip byte-identical %d, rebuilt from their description %d; %d of %d made-up checks (%s) (%.0f s)"
+           % (r["shapes"], r["with_shapes"], per_package, r["identical"], b["identical"], good, len(checks), ", ".join(n for n, k in checks if not k) or "all passed", time.time() - t0), notes)
+
+
+def _raises(fn, *a):
+    try: fn(*a)
+    except ValueError: return True
+    return False
+
+
 # --------------------------------------------------------------------------------------------------------------- synthetic
 def _quat(axis, ang):
     a = np.asarray(axis, float); a /= np.linalg.norm(a)
@@ -442,6 +485,7 @@ def main(argv):
     if "codecs" not in skip: section_codecs()
     if "caches" not in skip: section_caches(int(opt("--caches", 300)))
     if "skeletons" not in skip: section_skeletons()
+    if "physics" not in skip: section_physics(int(opt("--physics", 8)))
     if "synthetic" not in skip: section_synthetic()
     bad = [n for n, ok in RESULTS if not ok]
     print("\nSUMMARY: %d PASS, %d FAIL%s" % (len(RESULTS) - len(bad), len(bad), (" (" + ", ".join(bad) + ")") if bad else ""))
