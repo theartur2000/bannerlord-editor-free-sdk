@@ -105,8 +105,9 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 **Where stream A stands (2026-10-13).** Texture formats: done, all twelve formats Native uses are read and written
 (BC7 encoder mode 6, BC6H encoder mode 11). Clip caches: done, 297 of 297 in the self-test sample and 5,892 of 5,893 in
 Native. Physics shapes: read and written byte for byte (17,451 of 17,451); new shapes of capsules and spheres can be
-written; convex hulls and triangle meshes still need PhysX cooking. The next step for those is to call the cooking
-library the game ships (`PhysXCooking_64.dll`, section 7) rather than reimplement it.
+written, and so can convex hulls and triangle meshes, cooked by the cooking library the game ships (`PhysXCooking_64.dll`,
+section 7) through ctypes: all 16,655 shipped hulls and 16,701 shipped meshes reproduce byte for byte from their
+description. Not yet loaded in game.
 
 ### B. Scenes (L, the main new work)
 | Step | What | Size | Done when |
@@ -238,7 +239,7 @@ The two-halves design uses the engine as a build server. The longer aim is to ne
 | Computation | What the game ships that helps | Own implementation | Size |
 |---|---|---|---|
 | Navmesh generation | 19 of 98 shipped battle terrains are marked auto-generated, so the editor has a generator | An original algorithm; it only has to produce a valid file and good paths, not match theirs. Terrain navmesh is the easy case: walkable by slope and water depth, then merge grid cells into polygons | M, after the `navmesh.bin` format |
-| Physics cooking | `PhysXCooking_64.dll` ships in `bin` | Call the same cooking library, or let the engine cook at load | S to M |
+| Physics cooking | `PhysXCooking_64.dll` ships in `bin` | Done: `sdk/physx_cook.py` calls the same library through ctypes and reproduces every shipped cook | done |
 | Terrain normals, levels of detail, material maps | all inside `terrain.bin` | Computed by the SDK once the chunks are decoded | M |
 | Terrain shaders | 848 shader source files under `Shaders\Sources` (terrain ones included) and `d3dcompiler_47.dll`; the per-scene `ShaderCache` is a 28 KB header file, not compiled shaders | Generate the header directly; compile with the shipped compiler if needed | M |
 | Light and GI bake | none of the 67 shipped battle terrains that carry the flag has baked GI | Not needed for battlefields. For towns and interiors: a custom probe baker, the largest single item | L or more |

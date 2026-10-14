@@ -17,8 +17,10 @@
 #   skeletons  Native human / horse / camel skeleton definition and user data re-pack byte-identical
 #   physics    Native physics shapes (collision bodies): up to --physics shapes per package decode and re-encode byte-identical (record,
 #              description, dynamic cook, static cook), their hashes and entry rows follow the SDK's rule, and build() rebuilds each of them
-#              from its description byte-identical (cooked PhysX data taken from the game shape); plus a made-up capsule and sphere shape
-#              written to a package and read back, and a made-up hull and mesh body that physics.encode() must refuse (no cooked data)
+#              from its description byte-identical (cooked PhysX data taken from the game shape); every manifold of those shapes cooked with
+#              the game's own PhysX cooking library from its description must equal the stored hulls (all 8 mirrored copies) and mesh; plus
+#              a made-up capsule and sphere shape written to a package and read back, a made-up hull and mesh body that physics.encode()
+#              must refuse with cook=False, and the same two bodies cooked, written, read back and parsed
 #   synthetic  a tiny made-up skeleton, animation, clip, clip cache, texture, material and mesh written to a scratch folder,
 #              read back, and run through the validators, which must pass them and must catch four planted faults
 # Exit code 0 only when every section passes.
@@ -363,14 +365,31 @@ def section_physics(per_package):
         e = np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1); _, cnt = np.unique(e, axis=0, return_counts=True)
         vol = sum(np.dot(pts[t[0]], np.cross(pts[t[1]], pts[t[2]])) for t in F) / 6
         check("hull of a cube is closed, outward, volume 8", len(F) == 12 and (cnt == 2).all() and abs(vol - 8) < 1e-5, (len(F), vol))
-        hm = physics.convex_hull(cube, ["wood"]); hb = physics.build("selftest_hull", manifolds=[hm]); mb = physics.build("selftest_mesh", manifolds=[physics.triangle_mesh(hm["vertices"][:, :3], hm["face_index"], ["wood"])])
-        check("hull and mesh bodies are refused without cooked data", all(physics.needs_cook(x) for x in (hb, mb)) and all(_raises(physics.encode, x) for x in (hb, mb)))
+        hm = physics.convex_hull(cube, ["wood"]); mm = physics.triangle_mesh(hm["vertices"][:, :3], hm["face_index"], ["wood"])
+        hb = physics.build("selftest_hull", manifolds=[hm], cook=False); mb = physics.build("selftest_mesh", manifolds=[mm], cook=False)
+        check("hull and mesh bodies are refused without cooked data (cook=False)", all(physics.needs_cook(x) for x in (hb, mb)) and all(_raises(physics.encode, x) for x in (hb, mb)))
+        # cooked with the game's PhysX library: a hull and a mesh body written, read back, round trip; the cooks parse and the mirror rule holds
+        cooked = []
+        for nm, man in (("selftest_hull", hm), ("selftest_mesh", mm)):
+            s = physics.build(nm, manifolds=[man], source=bytes(range(16))); out = physics.write_package(s, root, force=True); res = list(physics.resources(out))
+            back = physics.decode_resource(res[0]) if len(res) == 1 else None; cooked.append(back)
+            check("made-up %s body cooked, written and read back" % nm[9:], back is not None and not physics.check_resource(res[0], stored=True) and physics.encode(back) == physics.encode(s)
+                  and back["stat"]["meshes"][0]["cook"] == physics.build(nm, manifolds=[man])["stat"]["meshes"][0]["cook"])
+        hb = cooked[0]; hs = [physics.hull_cook(hb["dyn"]["groups"][k][0])["vertices"] for k in range(physics.HULL_SLOTS)] if hb else None
+        me = physics.mesh_cook(hb["stat"]["meshes"][0]["cook"]) if hb else None
+        check("cooked cube: 8 hull corners in all 8 mirrored copies, mesh of 8 vertices and 12 triangles", hs is not None and all(len(h) == 8 for h in hs)
+              and all(np.allclose(np.sort(h * physics.MIRROR[k], axis=0), np.sort(hs[7], axis=0)) for k, h in enumerate(hs)) and len(me["vertices"]) == 8 and len(me["triangles"]) == 12)
     except Exception as ex:
         import traceback
         notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
-    good = sum(1 for _, k in checks if k)
-    report("physics", ok and good == len(checks) and checks != [], "%d Native physics shapes in %d packages (up to %d per package): round trip byte-identical %d, rebuilt from their description %d; %d of %d made-up checks (%s) (%.0f s)"
-           % (r["shapes"], r["with_shapes"], per_package, r["identical"], b["identical"], good, len(checks), ", ".join(n for n, k in checks if not k) or "all passed", time.time() - t0), notes)
+    # the cooker against the game: every manifold of the sampled shapes cooked from its own description, compared with the stored cooks
+    k = physics.check_cook(native, per_package=per_package); hk, mk = k["hulls_identical"], k["manifolds"] - k["meshes"].get("none", 0)
+    notes += ["cook: mesh classes %s, failures %s" % (k["meshes"], k["failures"])] * bool(k["failures"])
+    good = sum(1 for _, x in checks if x); ok = ok and hk == k["hulls"] and mk == k["manifolds"] and k["manifolds"] > 0
+    report("physics", ok and good == len(checks) and checks != [], "%d Native physics shapes in %d packages (up to %d per package): round trip byte-identical %d, rebuilt from their description %d; "
+           "cooked with the game's PhysX from their description: hulls %d of %d identical (8 copies each), meshes %d of %d (%s); %d of %d made-up checks (%s) (%.0f s)"
+           % (r["shapes"], r["with_shapes"], per_package, r["identical"], b["identical"], hk, k["hulls"], mk, k["manifolds"], ", ".join("%s %d" % x for x in sorted(k["meshes"].items())),
+              good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
 
 
 def _raises(fn, *a):

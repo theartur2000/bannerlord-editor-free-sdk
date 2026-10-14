@@ -29,7 +29,10 @@ thousands of assets practical. It was developed for a total conversion with abou
 - **Scene writers**: `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays, layer masks and entity
   lists, using a shipped scene as the template for texture layers and atmosphere.
 - **Collision bodies**: reads and rewrites every physics shape the game ships byte for byte, and writes new shapes
-  made of capsules and spheres. Convex hulls and triangle meshes need PhysX cooking, which is not implemented yet.
+  made of capsules, spheres, convex hulls and triangle meshes. Hulls and meshes are cooked by the PhysX 4.1.2 cooking
+  library the game ships, loaded from Python with ctypes; cooked from their own description, all 16,655 shipped hulls
+  and all 16,701 shipped meshes come out byte-identical (402 meshes with the BVH34 tree, 21 with zero material indices).
+  Cooked shapes have not been loaded in game yet.
 - **Readers for shipped content**: any mesh by name, every battle scene and its rock placement, and the campaign map
   as a height and terrain grid.
 - **Custom assets in scenes**: third-party textures, materials and models (PSK or FBX) as terrain layers and
@@ -259,7 +262,8 @@ python sdk/install.py status
 | `sdk/templates.py`, `sdk/config.py`, `sdk/pngio.py`, `sdk/fbx_bones.py` | templates from Native, paths, PNG, FBX reader |
 | `sdk/selftest.py` | the self-test below |
 | `sdk/texcodec.py` | block decoders and encoders for BC2, BC6H and BC7, and the uncompressed and half-float formats |
-| `sdk/physics.py` | physics shapes (collision bodies): read, write, round trip, build from capsules and spheres; `info`, `check`, `rebuild` |
+| `sdk/physics.py` | physics shapes (collision bodies): read, write, round trip, build from capsules, spheres, hulls and meshes; `info`, `check`, `rebuild`, `cookcheck`, `cook` |
+| `sdk/physx_cook.py` | ctypes binding to the game's `PhysXCooking_64.dll`: cooks convex hulls and triangle meshes as the engine does |
 | `sdk/bl.py` | the `bl` command line: every command of the SDK with JSON output and dry runs |
 | `sdk/mcp_server.py` | the same commands as MCP tools over stdio |
 | `sdk/scaffold.py`, `sdk/scaffold/` | `bl new`: project files and the C# templates (entry point, test driver, scene slots, bridge) |
@@ -297,7 +301,8 @@ PASS textures   42 Native textures (12 formats): record re-pack identical 42, si
 PASS codecs     29 of 29 checks
 PASS caches     297 Native clip caches: size trailer rule 297; 297 read by the SDK, 297 re-pack byte-identical
 PASS skeletons  3 of 3 Native skeletons re-pack byte-identical
-PASS physics    2922 Native physics shapes in 502 packages: round trip byte-identical 2922, rebuilt from their description 2922
+PASS physics    2922 Native physics shapes in 502 packages: round trip byte-identical 2922, rebuilt from their description 2922;
+                cooked with the game's PhysX from their description: hulls 2651 of 2651 identical, meshes 2662 of 2662
 PASS synthetic  14 of 14 checks
 SUMMARY: 7 PASS, 0 FAIL
 ```
@@ -313,8 +318,9 @@ SUMMARY: 7 PASS, 0 FAIL
   writer offers written from a synthetic picture and read back. The pins catch changes; correctness of the decoders
   was established separately, against an independent decoder, on tens of thousands of random blocks.
 - `caches`: every layout of Native clip caches: with and without a root channel, with and without raw key channels.
-- `physics`: up to eight physics shapes per package: decoded and re-encoded byte-identical, and rebuilt byte-identical
-  from their own description.
+- `physics`: up to eight physics shapes per package: decoded and re-encoded byte-identical, rebuilt byte-identical
+  from their own description, and every manifold cooked with the game's PhysX library must equal the stored hulls
+  (all 8 mirrored copies) and mesh. A made-up hull body and mesh body are cooked, written and read back.
 - `synthetic`: a synthetic skeleton, animation, clip, clip cache, texture, material and mesh are written, read back
   and validated. Four planted faults (65 bones, the IK rule, a 64 character clip name, an invalid `project.mbproj`
   id) must each be detected.

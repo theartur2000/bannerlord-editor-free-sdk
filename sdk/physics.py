@@ -1,40 +1,53 @@
-"""Physics shapes (collision bodies) of Bannerlord's asset packages: read, write, round trip, build.
+"""Physics shapes (collision bodies) of Bannerlord's asset packages: read, write, round trip, build, cook.
 
     python sdk/physics.py info <package> [shape ...]      the shapes of a package and their parts
     python sdk/physics.py check [--limit N] [--module M] [--stored] [package]
                                                           decode and re-encode every shape, compare byte for byte (N of M)
-    python sdk/physics.py rebuild [--limit N] [--module M] [package]
-                                                          rebuild every shape with build() from its own description, compare
+    python sdk/physics.py rebuild [--limit N] [--module M] [--cook] [package]
+                                                          rebuild every shape with build() from its own description, compare;
+                                                          --cook: with hulls and meshes cooked here instead of taken from the shape
+    python sdk/physics.py cookcheck [--limit N] [--module M] [package]
+                                                          cook every manifold with the game's PhysX library, compare with the stored cooks
+    python sdk/physics.py cook hull|mesh <file.obj> [--name N] [--material M] [--midphase bvh33|bvh34] [--out DIR] [--force]
+                                                          a one-resource package <name>_phys.tpac (default DIR <SDK_STAGE_DIR>/physics)
+                                                          holding a hull body (the convex hull of the points) or a triangle-mesh body
 
 A physics shape is one resource (type e8528e0e-64b6-4e61-bae0-7569c0452aea) with a record and three data entries, in this order:
 the description (86a5d575: name, capsules, spheres, manifolds = triangle soups with vertices, material names, faces), the dynamic cook
 (df27d12f: the primitives again and PhysX convex hulls, each manifold's hull 8 times mirrored) and the static cook (8283cbbb: the primitives
 again and PhysX triangle meshes). The record repeats the primitives and carries a summary per manifold and the bounds. The layouts are in
 the comments above each parse_/pack_ pair. Every field the module does not understand is kept as a value (the "unknown" u32 fields, the
-16 source bytes, the fourth face integer) or as raw bytes (the cooked PhysX blobs), so nothing is lost.
+16 source bytes) or as raw bytes (the cooked PhysX blobs), so nothing is lost. The hulls and meshes are cooked with the PhysX 4.1.2
+cooking library the game ships (physx_cook.py loads it with ctypes; Windows, game installed).
 
-Verified (game v1.4.8, every .tpac under Modules/*/AssetPackages and EmAssetPackages, read-only; run `check` and `rebuild` to repeat):
+Verified (game v1.4.8, every .tpac under Modules/*/AssetPackages and EmAssetPackages, read-only; run `check`, `rebuild`, `rebuild --cook`
+and `cookcheck` to repeat):
   - decode then encode gives the same bytes for the record and all three data blobs, and the record hash and the three data hashes are
     xxh64 of the bytes, and the entry rows follow one rule (type value 0 / 3 / 3, last byte 1 only when the stored copy is LZ4):
     17451 of 17451 shapes in 518 of 1260 packages (the others hold no shapes).
-  - build() rebuilds every one of those shapes byte-identical from its own description, record material, source bytes, dominant material
-    indices and flag lists, with the cooked PhysX blobs taken from the shape: 17451 of 17451. That proves the derivations: record
-    primitives and manifold summaries, bounds (float32, sign of zero included), the primitives of both cooks (a primitive without a
-    material takes the record's), the dynamic cook's name per manifold, the static cook's per-mesh numbers, the offsets table.
-  - with the dominant material index left to its default (0 with materials, -1 without) 16152 of 17451 are identical: all 872 shapes
-    without manifolds, all 13821 manifold shapes with one material or none, and 1459 of the 2758 with several materials. The 1299 that
-    differ all have several materials: the engine's choice of dominant index is not understood (it matched neither the most used material
-    nor the first or the last real one in every case), so for those pass dominant=.
+  - build() rebuilds every one of those shapes byte-identical from its own description, record material, source bytes and flag lists,
+    with the cooked PhysX blobs taken from the shape: 17451 of 17451. That proves the derivations: record primitives and manifold
+    summaries, the dominant material index (the most used per-face material index, the lowest on a tie: 16701 of 16701 manifolds), bounds
+    (float32, sign of zero included), the primitives of both cooks (a primitive without a material takes the record's), the dynamic cook's
+    name per manifold, the static cook's per-mesh numbers, the offsets table.
+  - The game's PhysX cooking library, called from here (cook_manifolds), reproduces the stored cooks from each manifold's own vertices
+    and triangles: all 16655 hulls byte-identical (all 133240 copies: 8 mirrored cooks per manifold, MIRROR), and all 16701 meshes:
+    16278 with the defaults (BVH33 "RTRE" tree, material index per face from the fourth face integer), 402 with the BVH34 "BV4 " tree,
+    21 with all-zero material indices. With cooking done by build() itself (`rebuild --cook`, the stored mesh's mid-phase passed on)
+    17433 of 17451 shapes are byte-identical; the 18 others hold those 21 zero-material meshes and differ in the static cook only.
+    The cooking parameters are in physx_cook's docstring (4.1 defaults, eCOMPUTE_CONVEX, and a second quantized cook appended when a hull
+    reaches 255 polygons, which 113 game hulls do).
   - mesh_cook() / hull_cook() read the front of the cooked blobs (vertices, triangles, material indices, remap; hull vertices): all 16701
-    meshes and all 133240 hulls (8 copies per manifold) parse, and every mesh's remaining bytes start with its "RTRE" or "BV4 " tree. A
-    mesh holds its manifold's vertices unchanged in 15534 of 16701 (the cooker alters the others). Everything after that front stays raw.
+    meshes and all 133240 hulls parse, and every mesh's remaining bytes start with its "RTRE" or "BV4 " tree. A mesh holds its manifold's
+    vertices unchanged in 15534 of 16701 (the cooker alters the others; cooking them here alters them the same way).
 
 Not verified, not done:
-  - Nothing here was tried in the game. A shape written by write_package() is unverified in game, including the primitive-only ones.
-  - The cooked PhysX data (convex hulls "CVXM", triangle meshes "MESH" with an "RTRE" or "BV4 " mid-phase tree, face remap) cannot be made
-    by this module: reordering of triangles, tree build and polygon/edge tables are PhysX's. So a hull or triangle-mesh body can be described
-    (convex_hull(), triangle_mesh(), build()) but encode() and write_package() refuse it without cook=; only shapes made of capsules and
-    spheres can be written from scratch. A shape's hulls or meshes can be reused with cook= only if they are the cook of the same geometry.
+  - Nothing here was tried in the game. A shape written by write_package() is unverified in game, including the primitive-only ones and
+    every hull or mesh body cooked here: the bytes follow the game's own cooks, but the engine loading them was not run.
+  - The mid-phase of a new mesh is a choice (midphase=, default "bvh33", what 16299 of 16701 game meshes use); which one the engine picks
+    for a shape is not known. Likewise nothing in a shape tells when its meshes were cooked with all-zero material indices (21 meshes).
+  - Cooking needs the game's PhysX DLLs in the Python process (one PhysX foundation per process); without them build() leaves the cooks
+    out and encode() refuses a shape with manifolds, as before. cook=False keeps them out on purpose.
   - The 16 "source" bytes of the record (the same on shapes of one family) are random in a new shape; what they refer to is unknown.
   - A primitive with flags (the game uses bf_ names) needs flag_lists=: the record and both cooks carry long lists for it that differ by
     file (24, 23 or 22 names) and cannot be derived from the description's flags.
@@ -51,9 +64,9 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import config, tpac, tpac_pack
+    import config, physx_cook, tpac, tpac_pack
 else:
-    from . import config, tpac, tpac_pack
+    from . import config, physx_cook, tpac, tpac_pack
 
 SHAPE_TYPE = uuid.UUID("e8528e0e-64b6-4e61-bae0-7569c0452aea").bytes_le   # "Physics shape" resource
 DESC = uuid.UUID("86a5d575-5dc1-4542-a52f-3865aa8fb4fa").bytes_le         # data: description (name, capsules, spheres, manifolds)
@@ -120,10 +133,11 @@ def sphere(center, radius, material="", flags=()):
 
 # ---------------------------------------------------------------------------------------------------------- description data
 # Name, then three lists: capsules, spheres, manifolds. A manifold is a triangle soup: u32 (unknown, 0), u32 vertex count,
-# vertices as vec4 (w = 1), material names, u32 face count, then per face: i32 index into the material names, flag names, three
-# i32 vertex indices and a fourth i32 ("face_extra": 0 or -1 on most faces, another value on some; the open-source reader calls it
-# a fourth index, but the cooked meshes show a face is a triangle). Every manifold of a game shape is cooked twice: as a
-# triangle mesh (static cook) and as a convex hull (dynamic cook).
+# vertices as vec4 (w = 1), material names, u32 face count, then per face: i32 (kept as "face_material", the open-source reader's
+# material index, but 0 on every game face), flag names, three i32 vertex indices and a fourth i32 ("face_extra"; the open-source reader
+# calls it a fourth index). The fourth i32 is the face's index into the material names, -1 without materials: it is what the engine
+# cooks into the triangle mesh's material table and what decides the dominant material (dominant_of, material_index_of). Every
+# manifold of a game shape is cooked twice: as a triangle mesh (static cook) and as a convex hull (dynamic cook).
 FACE_FIXED = 24                                                           # material i32 + flag count u32 + 4 x i32, when no face has flag names
 
 def read_manifold(r):
@@ -180,8 +194,8 @@ def pack_record(d):
 # ---------------------------------------------------------------------------------------------------------- dynamic cook
 # u8 1, spheres, capsules (lists as above), then one material name per manifold (u32 count + names), then 8 x u64 offsets
 # and the hulls: for every manifold a PhysX convex mesh ("NXS" 1 "CVXM", PhysX cooked data, kept raw), stored as u32 size +
-# bytes, manifold after manifold, 8 times in a row: the 8 groups hold the same hull mirrored on the 8 sign combinations of
-# x, y, z (group 0 as authored). The 8 offsets are where each group starts counted in hull bytes (size prefixes not counted).
+# bytes, manifold after manifold, 8 times in a row: group k is the hull cooked from the vertices mirrored by MIRROR[k] (group 0 all
+# three axes negated, group 7 as authored). The 8 offsets are where each group starts counted in hull bytes (size prefixes not counted).
 # With no manifold the 8 offsets are 0 and nothing follows. A shape whose cook is a lone byte (23 occluders) keeps just that byte.
 def parse_dyn(b):
     if len(b) == 1: return dict(version=b[0], short=True)
@@ -217,9 +231,10 @@ def pack_stat(d):
     return write_list(d["spheres"], write_sphere) + write_list(d["capsules"], write_capsule) + write_list(d["meshes"], lambda m: U32.pack(len(m["cook"])) + m["cook"] + U32.pack(m["u0"]) + w_strs(m["materials"])) + d["tail"]
 
 
-# ---------------------------------------------------------------------------------------------------------- PhysX blobs (read only)
-# The hulls and meshes are PhysX 3.x cooked data. Only their front is decoded here; the rest (polygons, edges, the mid-phase
-# tree) stays bytes and is not rebuilt: nothing in this module can cook a hull or a mesh.
+# ---------------------------------------------------------------------------------------------------------- PhysX blobs
+# The hulls and meshes are PhysX 4.1 cooked data (the game ships PhysX 4.1.2; physx_cook.py cooks them with its library). Only their
+# front is decoded here; the rest (polygons, edges, the mid-phase tree) stays bytes. A hull whose first cook hit the 255 polygon limit
+# holds a second, quantized cook right after the first (see physx_cook); hull_cook() reads the first.
 #   mesh: "NXS" 1 "MESH", u32 version (15), u32 0, u32 serial flags (1 material indices, 2 face remap, 4 8-bit indices, 8 16-bit), u32 vertex
 #         count, u32 triangle count, vertices as 3 f32, indices (u8 / u16 / u32 by the flags), u16 material index per triangle when flag 1,
 #         face remap when flag 2 (u32 largest id, then the ids as u8 / u16 / u32), then the "RTRE" tree page data and local bounds.
@@ -251,7 +266,8 @@ def decode(name, record, blobs):
 
 def encode(shape):
     """(record bytes, {data type guid: raw bytes}) of a decoded shape."""
-    if needs_cook(shape): raise ValueError("this shape has manifolds but no cooked PhysX data (build(cook=...)): nothing here can cook a hull or a mesh")
+    if needs_cook(shape): raise ValueError("this shape has manifolds but no cooked PhysX data: build() it with cook=None where the game's PhysX library loads (%s), or pass cook="
+                                           % (physx_cook.why_not() or "it loads here"))
     return pack_record(shape["record"]), {DESC: pack_desc(shape["desc"]), DYN: pack_dyn(shape["dyn"]), STAT: pack_stat(shape["stat"])}
 
 def needs_cook(shape):
@@ -261,9 +277,10 @@ def needs_cook(shape):
 # ---------------------------------------------------------------------------------------------------------- building a shape
 # What is derived (and checked against the game's own shapes by check_build): the record's primitive and manifold summaries and its
 # bounds, the primitives of both cooks (a primitive without a material takes the record's), the dynamic cook's one name per
-# manifold, the static cook's per-mesh numbers. What is not derived: the cooked PhysX hulls and meshes (cook=), the record's 16
-# "source" bytes (a random guid unless given), the dominant material index of a manifold whose materials are not all real
-# physics materials (dominant=), and the long flag lists the record and the cooks carry for a primitive that has flags (flag_lists=).
+# manifold, the static cook's per-mesh numbers, the dominant material index (dominant_of). The cooked PhysX hulls and meshes are made
+# by the game's PhysX library (cook_manifolds, checked by check_cook); the mesh mid-phase (midphase=) is a choice, not derived. Not
+# derived: the record's 16 "source" bytes (a random guid unless given) and the long flag lists the record and the cooks carry for a
+# primitive that has flags (flag_lists=).
 def bounds_of(capsules, spheres, manifolds):
     """The record's bounds as the engine writes them: box over capsule ends and sphere centres grown by the radius, and over the
     manifold vertices; centre = box middle; radius = distance from the centre to a box corner (float32 throughout). Where the extreme
@@ -281,18 +298,32 @@ def bounds_of(capsules, spheres, manifolds):
     return dict(min=np.r_[lo, one].astype("<f4"), max=np.r_[hi, one].astype("<f4"), center=np.r_[cen, one].astype("<f4"), radius=f(np.sqrt(((hi - cen) ** 2).sum(dtype="<f4"))))
 
 def manifold(vertices, faces, materials=(), face_material=None, face_extra=None):
-    """A manifold (triangle soup) from vertices (n, 3) and triangles (k, 3). materials: physics material names; face_material: index
-    into them per triangle (default 0, or -1 without materials). face_extra: the fourth i32 per face (default 0 with materials, -1 without)."""
+    """A manifold (triangle soup) from vertices (n, 3) and triangles (k, 3). materials: physics material names; face_material: index into
+    them per triangle (default 0, or -1 without materials). It is stored where the game stores it: in the fourth i32 of each face
+    ("face_extra"), which is what the engine cooks into the mesh's material table and counts for the dominant material; the first i32
+    ("face_material" in the decoded dict) is 0 on every game manifold (16701 of 16701) and is written 0. face_extra= overrides the index."""
     V = np.asarray(vertices, "<f4").reshape(-1, 3); F = np.asarray(faces, "<i4").reshape(-1, 3)
     if len(F) and (F.min() < 0 or F.max() >= len(V)): raise ValueError("a face points outside the vertices")
-    dflt = 0 if materials else -1
-    fm = np.full(len(F), dflt, "<i4") if face_material is None else np.asarray(face_material, "<i4").reshape(len(F))
-    fx = np.full(len(F), dflt, "<i4") if face_extra is None else np.asarray(face_extra, "<i4").reshape(len(F))
-    if len(fm) and (fm.min() < -1 or (fm.max() >= len(materials))) and not (not materials and (fm == -1).all()): raise ValueError("a face material index is outside the materials")
-    return dict(u0=0, vertices=np.c_[V, np.ones(len(V), "<f4")].astype("<f4"), materials=list(materials), face_material=fm, face_index=F, face_extra=fx, face_flags=None)
+    idx = face_extra if face_extra is not None else face_material
+    fx = np.full(len(F), 0 if materials else -1, "<i4") if idx is None else np.asarray(idx, "<i4").reshape(len(F))
+    if len(fx) and (fx.min() < -1 or (fx.max() >= len(materials))) and not (not materials and (fx == -1).all()): raise ValueError("a face material index is outside the materials")
+    return dict(u0=0, vertices=np.c_[V, np.ones(len(V), "<f4")].astype("<f4"), materials=list(materials), face_material=np.zeros(len(F), "<i4"), face_index=F, face_extra=fx, face_flags=None)
+
+def dominant_of(m):
+    """The record's dominant material index of a manifold: the most used per-face material index (face_extra) among the manifold's
+    materials, the lowest on a tie, -1 when no face has one. Matches the stored index on 16701 of 16701 game manifolds."""
+    fx = np.asarray(m["face_extra"]); fx = fx[(fx >= 0) & (fx < len(m["materials"]))]
+    if not len(fx): return -1
+    v, n = np.unique(fx, return_counts=True); return int(v[np.argmax(n)])
+
+def material_index_of(m):
+    """The u16 material index per triangle the engine cooks into a manifold's triangle mesh: face_extra, -1 as 0. Reproduces the
+    stored mesh on all but 21 of 16701 game meshes; those 21 were cooked with all-zero indices (the first i32 of the faces), which
+    nothing in the shape predicts, so pass material_index= for them."""
+    return np.maximum(np.asarray(m["face_extra"], np.int64), 0).astype("<u2")
 
 def triangle_mesh(vertices, faces, materials=(), **kw):
-    """A triangle-mesh body: the description's manifold. The engine's PhysX cooks it into the static cook (build(cook=...))."""
+    """A triangle-mesh body: the description's manifold. build() cooks it into the static cook (and a hull into the dynamic cook, as the engine does for every manifold)."""
     return manifold(vertices, faces, materials, **kw)
 
 def hull_triangles(points):
@@ -319,9 +350,23 @@ def hull_triangles(points):
 
 def convex_hull(points, materials=()):
     """A convex-hull body from points (n, 3): the description's manifold holds the hull's triangles. The engine's PhysX cooks it into the
-    dynamic cook (8 mirrored copies of one cooked hull, build(cook=...))."""
+    dynamic cook (8 mirrored cooks of the hull, build() makes them) and into the static cook as a triangle mesh."""
     P = np.asarray(points, np.float64).reshape(-1, 3); F = hull_triangles(P); used = np.unique(F); remap = -np.ones(len(P), np.int32); remap[used] = np.arange(len(used))
     return manifold(P[used], remap[F], materials)
+
+# The 8 hull groups of the dynamic cook: group k is the manifold's vertices scaled by MIRROR[k] and cooked (x is negated when bit 2 of k is
+# clear, y bit 1, z bit 0: group 0 is (-x, -y, -z), group 7 the vertices as they are). Found by cooking all 8 sign combinations of game
+# manifolds and matching them to the stored groups; every reproduced hull follows this order.
+MIRROR = np.array([[1 if k & 4 else -1, 1 if k & 2 else -1, 1 if k & 1 else -1] for k in range(HULL_SLOTS)], "<f4")
+
+def cook_manifolds(manifolds, dynamic_cook=True, midphase="bvh33", material_index=None):
+    """The cooked PhysX data of manifolds, made by the game's own PhysX cooking library (physx_cook): dict(hulls=[8 groups, each one hull
+    per manifold], meshes=[one triangle mesh per manifold]), the cook= of build(). midphase: "bvh33" (the "RTRE" tree, 16299 of the 16701
+    game meshes) or "bvh34" ("BV4 ", the other 402). material_index: per manifold the u16 per triangle (default material_index_of)."""
+    mans = list(manifolds); mi = [material_index_of(m) if material_index is None or material_index[i] is None else material_index[i] for i, m in enumerate(mans)]
+    meshes = [physx_cook.mesh(m["vertices"][:, :3], m["face_index"], x, midphase) for m, x in zip(mans, mi)]
+    hulls = [[physx_cook.hull(m["vertices"][:, :3] * MIRROR[k]) for m in mans] for k in range(HULL_SLOTS)] if dynamic_cook and mans else None
+    return dict(hulls=hulls, meshes=meshes)
 
 def _flags(own, lists, where):
     if not own: return []
@@ -334,15 +379,17 @@ def resolve_material(materials, dominant, default):
     if default: return default, 0
     return (materials[dominant] if materials and 0 <= dominant < len(materials) else ""), dominant & 0xffffffff
 
-def build(name, capsules=(), spheres=(), manifolds=(), material="", source=None, dominant=None, flag_lists=None, cook=None, dynamic_cook=True):
+def build(name, capsules=(), spheres=(), manifolds=(), material="", source=None, dominant=None, flag_lists=None, cook=None, dynamic_cook=True, midphase="bvh33"):
     """A decoded shape from its primitives (capsule(), sphere()) and manifolds (triangle_mesh(), convex_hull()). material: the record's default
-    physics material name. source: 16 bytes (default random). dominant: per manifold the dominant material index (default 0 with materials, -1
-    without). flag_lists: see _flags.
-    cook: dict(hulls=[8 groups, each a list of one cooked hull per manifold], meshes=[one cooked triangle mesh per manifold]), PhysX data this
-    module cannot make; without it a shape with manifolds is returned but encode() refuses it. dynamic_cook=False: a lone-byte dynamic cook
-    (no hulls, as 46 game shapes have), so only meshes are needed."""
+    physics material name. source: 16 bytes (default random). dominant: per manifold the dominant material index (default dominant_of).
+    flag_lists: see _flags.
+    cook: dict(hulls=[8 groups, each a list of one cooked hull per manifold], meshes=[one cooked triangle mesh per manifold]). None: cooked
+    here by cook_manifolds() with the game's PhysX library (midphase= passed on) when the library loads, else left out; False: left out. A shape with
+    manifolds and no cooked data is returned but encode() refuses it. dynamic_cook=False: a lone-byte dynamic cook (no hulls, as 46 game
+    shapes have), so only meshes are needed."""
     caps = [dict(c, flags=list(c["flags"])) for c in capsules]; sphs = [dict(c, flags=list(c["flags"])) for c in spheres]; mans = list(manifolds)
-    dom = [(0 if m["materials"] else -1) for m in mans] if dominant is None else list(dominant)
+    dom = [dominant_of(m) for m in mans] if dominant is None else list(dominant)
+    if cook is None and mans and physx_cook.available(): cook = cook_manifolds(mans, dynamic_cook, midphase)
     if len(dom) != len(mans): raise ValueError("one dominant index per manifold")
     def res(lst, where): return [dict(c, material=c["material"] or material, flags=_flags(c["flags"], flag_lists, where)) for c in lst]
     def keep(lst, where): return [dict(c, flags=_flags(c["flags"], flag_lists, where)) for c in lst]
@@ -461,9 +508,10 @@ def check(paths=None, limit=None, stored=False, log=None, per_package=None):
         if limit and out["shapes"] >= limit: break
     return out
 
-def check_build(paths=None, limit=None, per_package=None):
+def check_build(paths=None, limit=None, per_package=None, cooked=False):
     """Rebuild every game shape with build() from its own description, record material, source and flag lists, and compare the four parts.
-    The cooked data is taken from the game shape (it cannot be derived). Returns dict(shapes, identical, by_kind={kind: [n, identical]},
+    The cooked data is taken from the game shape, or with cooked=True made by build() itself with the game's PhysX library (the mid-phase
+    of the stored meshes passed on, as it cannot be derived). Returns dict(shapes, identical, by_kind={kind: [n, identical]},
     failures={class: (count, example)}). Kinds: 'primitives' (no manifold), 'manifolds' (with manifolds, one real material or none),
     'manifolds, several materials'. A shape that differs is classed by the parts that differ."""
     files = list(paths) if paths else native_packages(); out = dict(shapes=0, identical=0, by_kind={}, failures={})
@@ -480,8 +528,9 @@ def check_build(paths=None, limit=None, per_package=None):
                   "stat": next((c["flags"] for c in S["capsules"] + S["spheres"] if c["flags"]), None)}
             fl = {a: b for a, b in fl.items() if b is not None}
             try:
-                b = build(D["name"], D["capsules"], D["spheres"], D["manifolds"], R["material"], R["source"], dominant=[m["dominant"] for m in R["manifolds"]], flag_lists=fl,
-                          cook=dict(hulls=None if Y["short"] else Y["groups"], meshes=[m["cook"] for m in S["meshes"]]), dynamic_cook=not Y["short"])
+                mid = "bvh34" if any(m["cook"][mesh_cook(m["cook"])["rest_at"]:][:4] == b"BV4 " for m in S["meshes"]) else "bvh33"
+                b = build(D["name"], D["capsules"], D["spheres"], D["manifolds"], R["material"], R["source"], flag_lists=fl, midphase=mid,       # dominant: derived (dominant_of)
+                          cook=None if cooked else dict(hulls=None if Y["short"] else Y["groups"], meshes=[m["cook"] for m in S["meshes"]]), dynamic_cook=not Y["short"])
                 rec, blobs = encode(b); bad = [n for n, a, c in (("record", rec, res["record"]), ("desc", blobs[DESC], res["entries"][0]["raw"]), ("dyn", blobs[DYN], res["entries"][1]["raw"]),
                                                               ("stat", blobs[STAT], res["entries"][2]["raw"])) if a != c]
             except Exception as e:
@@ -489,6 +538,36 @@ def check_build(paths=None, limit=None, per_package=None):
             if not bad: out["identical"] += 1; k[1] += 1
             else:
                 key = "+".join(bad); c, ex = out["failures"].get((kind, key), (0, "%s:%s" % (os.path.basename(p), res["name"]))); out["failures"][(kind, key)] = (c + 1, ex)
+    return out
+
+MESH_VARIANTS = (("bvh33", None), ("bvh34", None), ("bvh33", "zero"), ("bvh34", "zero"))   # mid-phase, material indices (None: material_index_of)
+
+def check_cook(paths=None, limit=None, per_package=None, log=None):
+    """Cook every manifold of the game's shapes with the game's PhysX library from the shape's own description (cook_manifolds) and compare
+    with the stored cooks. A hull counts when all 8 mirrored copies are identical. A mesh is tried with the defaults (BVH33, material_index_of),
+    then BVH34, then all-zero material indices; the first variant that is identical names its class. Returns dict(shapes, manifolds, hulls
+    (manifolds with a dynamic cook), hulls_identical, hull_copies, hull_copies_identical, meshes={variant or 'none': count}, failures)."""
+    files = list(paths) if paths else native_packages(); out = dict(shapes=0, manifolds=0, hulls=0, hulls_identical=0, hull_copies=0, hull_copies_identical=0, meshes={}, failures={})
+    for p in files:
+        n = 0
+        for res in resources(p):
+            if limit and out["shapes"] >= limit: return out
+            if per_package and n >= per_package: break
+            s = decode_resource(res); D, Y, S = s["desc"], s["dyn"], s["stat"]
+            if not D["manifolds"]: continue
+            n += 1; out["shapes"] += 1; where = "%s:%s" % (os.path.basename(p), res["name"])
+            for i, m in enumerate(D["manifolds"]):
+                out["manifolds"] += 1; V = m["vertices"][:, :3]; got = "none"
+                for mid, mat in MESH_VARIANTS:
+                    if physx_cook.mesh(V, m["face_index"], material_index_of(m) if mat is None else np.zeros(len(m["face_index"]), "<u2"), mid) == S["meshes"][i]["cook"]:
+                        got = mid + ("" if mat is None else ", zero materials"); break
+                out["meshes"][got] = out["meshes"].get(got, 0) + 1
+                if got == "none": c, ex = out["failures"].get("mesh", (0, where)); out["failures"]["mesh"] = (c + 1, ex)
+                if Y["short"]: continue
+                ok = sum(physx_cook.hull(V * MIRROR[k]) == Y["groups"][k][i] for k in range(HULL_SLOTS))
+                out["hulls"] += 1; out["hulls_identical"] += ok == HULL_SLOTS; out["hull_copies"] += HULL_SLOTS; out["hull_copies_identical"] += ok
+                if ok < HULL_SLOTS: c, ex = out["failures"].get("hull", (0, where)); out["failures"]["hull"] = (c + 1, ex)
+        if log and n: log("%-48s %5d shapes with manifolds" % (os.path.basename(p), n))
     return out
 
 
@@ -511,7 +590,7 @@ def describe(shape):
     return "\n".join(lines)
 
 def main(argv):
-    a = [x for i, x in enumerate(argv) if not x.startswith("--") and not (i and argv[i - 1] in ("--limit", "--module"))]; opt = lambda k, d=None: argv[argv.index(k) + 1] if k in argv else d
+    a = [x for i, x in enumerate(argv) if not x.startswith("--") and not (i and argv[i - 1] in ("--limit", "--module", "--name", "--material", "--midphase", "--out"))]; opt = lambda k, d=None: argv[argv.index(k) + 1] if k in argv else d
     if a[:1] == ["info"] and len(a) >= 2:
         for res in resources(a[1]):
             if len(a) > 2 and res["name"] not in a[2:]: continue
@@ -524,12 +603,39 @@ def main(argv):
         for k, (c, ex) in sorted(r["failures"].items(), key=lambda x: -x[1][0]): print("  fails %-22s %6d  e.g. %s" % (k, c, ex))
         return 0 if r["identical"] == r["shapes"] and r["shapes"] else 1
     if a[:1] == ["rebuild"]:
-        config.require_game(); r = check_build(paths=[a[1]] if len(a) > 1 else native_packages(opt("--module")), limit=int(opt("--limit", 0)) or None)
-        print("shapes %d, rebuilt from their description byte-identical %d" % (r["shapes"], r["identical"]))
+        config.require_game(); r = check_build(paths=[a[1]] if len(a) > 1 else native_packages(opt("--module")), limit=int(opt("--limit", 0)) or None, cooked="--cook" in argv)
+        print("shapes %d, rebuilt from their description%s byte-identical %d" % (r["shapes"], " (cooked here)" if "--cook" in argv else "", r["identical"]))
         for k, (n, i) in sorted(r["by_kind"].items()): print("  %-30s %6d shapes, %6d identical" % (k, n, i))
         for k, (c, ex) in sorted(r["failures"].items(), key=lambda x: -x[1][0]): print("  differs %-45s %6d  e.g. %s" % (k, c, ex))
         return 0
+    if a[:1] == ["cookcheck"]:
+        config.require_game(); physx_cook.cooker()
+        r = check_cook(paths=[a[1]] if len(a) > 1 else native_packages(opt("--module")), limit=int(opt("--limit", 0)) or None, log=print if "--verbose" in argv else None)
+        print("shapes with manifolds %d, manifolds %d; hulls identical %d of %d (copies %d of %d); meshes identical %d of %d"
+              % (r["shapes"], r["manifolds"], r["hulls_identical"], r["hulls"], r["hull_copies_identical"], r["hull_copies"], r["manifolds"] - r["meshes"].get("none", 0), r["manifolds"]))
+        for k, c in sorted(r["meshes"].items(), key=lambda x: -x[1]): print("  mesh %-24s %6d" % (k, c))
+        for k, (c, ex) in sorted(r["failures"].items()): print("  differs %-6s %6d  e.g. %s" % (k, c, ex))
+        return 0
+    if a[:1] == ["cook"] and len(a) >= 3 and a[1] in ("hull", "mesh"):
+        P, F = read_obj(a[2]); name = opt("--name") or os.path.splitext(os.path.basename(a[2]))[0]; mats = [opt("--material")] if opt("--material") else []
+        man = convex_hull(P, mats) if a[1] == "hull" else triangle_mesh(P, F, mats)
+        sh = build(name, manifolds=[man], cook=cook_manifolds([man], midphase=opt("--midphase", "bvh33")))
+        out = write_package(sh, opt("--out") or os.path.join(config.SDK_STAGE_DIR, "physics"), force="--force" in argv)
+        print(describe(sh)); print("written", out); return 0
     print(__doc__); return 2
+
+def read_obj(path):
+    """(vertices (n, 3), triangles (k, 3)) of an .obj file: v lines, and f lines fanned into triangles (1-based or negative indices)."""
+    P = []; F = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            w = line.split()
+            if not w: continue
+            if w[0] == "v": P.append([float(x) for x in w[1:4]])
+            elif w[0] == "f":
+                idx = [int(x.split("/")[0]) for x in w[1:]]; idx = [i - 1 if i > 0 else len(P) + i for i in idx]
+                F += [[idx[0], idx[k], idx[k + 1]] for k in range(1, len(idx) - 1)]
+    return np.array(P, np.float64).reshape(-1, 3), np.array(F, np.int64).reshape(-1, 3)
 
 
 if __name__ == "__main__":
