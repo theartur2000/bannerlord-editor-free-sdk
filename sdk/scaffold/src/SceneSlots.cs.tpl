@@ -5,7 +5,7 @@
 // keeps its terrain.bin open until the game exits, so a folder takes one scene a session.
 // `bl slots create` makes the folders (SceneObj/<prefix>_<n>). Take() hands out one that has not been used this session;
 // the caller writes the three files into it and loads the scene by the slot's name. Slots filled in a past session are
-// emptied again at the next start (EmptyUsed), when nothing is held yet.
+// emptied again at the next start (EmptyUsed), when nothing is held yet, and their terrain shader caches are deleted.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -62,6 +62,11 @@ namespace __MOD__
                         string f = Path.Combine(dir, fn);
                         if (File.Exists(f) && new FileInfo(f).Length > 0) { File.WriteAllBytes(f, new byte[0]); emptied++; }
                     }
+                    // The game keeps the terrain shader it compiled per module and scene name. A slot gets other scenes with
+                    // other painted layers, and a stale shader draws their ground dark or with the wrong textures.
+                    string cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Mount and Blade II Bannerlord",
+                                                "Shaders", "TerrainShaders", SubModule.ModuleId, Path.GetFileName(dir));
+                    try { if (Directory.Exists(cache)) Directory.Delete(cache, true); } catch (Exception e) { Log.Write("slots: shader cache of " + Path.GetFileName(dir) + " not deleted: " + e.Message); }
                 }
                 if (emptied > 0) Log.Write("slots: " + emptied + " files of slots used last session emptied");
             }

@@ -340,9 +340,21 @@ def asset_material(a):
     return _stage_cmd(a, argv)
 
 
-@command("asset.mesh", "Stages a static or skinned mesh from an FBX.",
-         [P("fbx", required=True), P("name"), P("material", help="material names, comma separated, one per submesh"), STAGE, P("force", "bool")], writes=True)
-def asset_mesh(a): return _stage_cmd(a, ["mesh", a["fbx"]] + _opts(a, ("name", "material", "stage")) + (["--force"] if a.get("force") else []))
+@command("asset.mesh", "Stages a static or skinned mesh from an FBX, and reports its size so a wrong unit shows at once.",
+         [P("fbx", required=True), P("name"), P("material", help="material names, comma separated, one per submesh"),
+          P("scale", "number", help="multiply positions: 0.01 for an FBX from Blender's default export, which comes out 100 times too big", default=1.0),
+          STAGE, P("force", "bool")], writes=True)
+def asset_mesh(a):
+    import sdk_mesh
+    P_ = [s["P"] for _, subs in sdk_mesh.submeshes(a["fbx"], float(a.get("scale") or 1.0)) for s in subs]
+    import numpy as np
+    P_ = np.concatenate(P_) if P_ else np.zeros((1, 3)); size = (P_.max(0) - P_.min(0)).round(3).tolist()
+    res = _stage_cmd(a, ["mesh", a["fbx"]] + _opts(a, ("name", "material", "scale", "stage")) + (["--force"] if a.get("force") else []))
+    res["size_m"] = size
+    big = max(size)
+    if big > 60: res["warning"] = "the mesh is %.0f m across: if it should be smaller, the FBX unit is off (Blender's default export needs --scale 0.01)" % big
+    elif big < 0.05: res["warning"] = "the mesh is %.3f m across: if it should be bigger, the FBX unit is off (try --scale 100)" % big
+    return res
 
 
 @command("asset.skeleton", "Stages a skeleton (at most 64 bones, a minimal ragdoll) from an FBX or glTF.",
@@ -641,7 +653,7 @@ def mesh_find(a):
     return {"count": len(hit), "names": hit[:int(a.get("limit") or 60)], "of": len(idx)}
 
 
-MESH = P("mesh", help="a shipped mesh name, or an .obj / .psk / .pskx file", required=True)
+MESH = P("mesh", help="a shipped mesh name, or an .obj / .fbx / .psk / .pskx file", required=True)
 
 
 @command("mesh.info", "Size, triangle count and how open a mesh is (most shipped rocks are one-sided shells).", [MESH])

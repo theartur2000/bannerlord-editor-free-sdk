@@ -206,12 +206,15 @@ def _color(c):
     c = np.clip(np.rint(np.asarray(c) * 255), 0, 255).astype(np.uint32)
     return (c[:, 3] << 24) | (c[:, 0] << 16) | (c[:, 1] << 8) | c[:, 2]   # assumed A8R8G8B8 (all test sources: 0 or none)
 
-def submeshes(path):
-    """FBX -> [(metamesh name, [submesh dict])]: one metamesh per mesh node, one submesh per material name."""
+def submeshes(path, scale=1.0):
+    """FBX -> [(metamesh name, [submesh dict])]: one metamesh per mesh node, one submesh per material name.
+    One FBX unit is one metre after the node transforms, as the files the editor comparisons were made with (their
+    UnitScaleFactor says centimetres and is not applied). Blender's default export puts a scale of 100 on the node, so its
+    models come out 100 times too big: pass scale=0.01 for those (or export with "Apply Scalings: FBX All")."""
     gs, meshes = read_fbx(path); C = axis_conv(gs); out = []
     for m in meshes:
         Mx = C @ m["M"][:3, :3]                               # node global x geometric transform, Z-up
-        V = m["V"] @ Mx.T + C @ m["M"][:3, 3]
+        V = (m["V"] @ Mx.T + C @ m["M"][:3, 3]) * float(scale)
         PVI = m["PVI"]; cp = np.where(PVI < 0, ~PVI, PVI); ci = np.arange(len(PVI))
         ends = np.where(PVI < 0)[0]; starts = np.r_[0, ends[:-1] + 1]; poly = np.repeat(np.arange(len(ends)), ends - starts + 1)
         if not m["normals"]: raise ValueError("%s: no normals" % m["name"])
@@ -423,13 +426,13 @@ def metamesh_owner(name, skip=None):
             i = meta.find(META_TYPE, i + 1)
     return None
 
-def write_mesh(fbx, out_dir=None, rdc_dir=None, materials=None, force=False, ids=None, mtl_dir=None, name=None):
+def write_mesh(fbx, out_dir=None, rdc_dir=None, materials=None, force=False, ids=None, mtl_dir=None, name=None, scale=1.0):
     """<fbx name>_geo.tpac + RuntimeDataCache/<package>.rdc from an FBX (one mesh node). materials: list of material
     names per submesh (default: the FBX material names). Returns (tpac path, rdc path, [submesh summaries])."""
     base = os.path.splitext(os.path.basename(fbx))[0]
     out = os.path.join(out_dir or tpac.ASSETS, base + "_geo.tpac")
     if os.path.exists(out) and not force: raise FileExistsError(out + " exists (use --force)")
-    metas = submeshes(fbx)
+    metas = submeshes(fbx, scale)
     if len(metas) != 1: raise ValueError("%s: %d mesh nodes (one expected)" % (fbx, len(metas)))
     mname, subs = metas[0]
     return write_metamesh(base, mname, subs, open(fbx, "rb").read(), out_dir, rdc_dir, materials, force, ids, mtl_dir, name)

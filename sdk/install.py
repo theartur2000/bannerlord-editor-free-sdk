@@ -7,7 +7,8 @@
 #   python install.py material <name> --diffuse T [--normal T] [--specular T] [--shader S] [--blend B] [--flags a,b]
 #                              [--static|--skinned] [--template <mtl.tpac>]
 #   python install.py retex <installed material> --diffuse T [--normal T] [--specular T]
-#   python install.py mesh <fbx> [--name N] [--material A[,B]]    static or skinned (bip01_<name>_<index> bones)
+#   python install.py mesh <fbx> [--name N] [--material A[,B]] [--scale S]   static or skinned (bip01_<name>_<index> bones);
+#                                                                  --scale 0.01 for Blender's default FBX export
 #   python install.py anim <fbx> [...]                             single-take skeleton animations
 #   python install.py skeleton <fbx|gltf> [--name N] [--type other|human|horse] [--no-physics] [--axes yup|umodel]
 #                                                                  skeleton package (max 64 bones, minimal ragdoll)
@@ -314,7 +315,7 @@ def main(argv=None):
         import sdk_mesh
         mats = opt("--material").split(",") if opt("--material") else None
         for f in [x for x in a[1:] if x.lower().endswith(".fbx")]:
-            out, rp, info = sdk_mesh.write_mesh(f, A, R, mats, force, name=opt("--name"))
+            out, rp, info = sdk_mesh.write_mesh(f, A, R, mats, force, name=opt("--name"), scale=float(opt("--scale", 1.0)))
             print("staged", out, "+", os.path.basename(rp))
             for x in info: print("  submesh %-28s material %-24s positions %d vertices %d triangles %d%s" % (x[0], x[1], x[2], x[3], x[4], " skinned" if x[5] else ""))
     elif cmd == "anim":

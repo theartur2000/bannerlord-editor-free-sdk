@@ -121,7 +121,7 @@ def _save(img, out, labels=(), lines=()):
 
 
 def load_mesh(source):
-    """(positions, triangles, name) from a shipped metamesh name, an .obj file or a .psk / .pskx file."""
+    """(positions, triangles, name) from a shipped metamesh name, an .obj, .fbx, .psk or .pskx file."""
     low = source.lower()
     if low.endswith(".obj"):
         P = []; F = []
@@ -135,6 +135,13 @@ def load_mesh(source):
                     idx = [i - 1 if i > 0 else len(P) + i for i in idx]
                     for k in range(1, len(idx) - 1): F.append([idx[0], idx[k], idx[k + 1]])
         return np.array(P, np.float64).reshape(-1, 3), np.array(F, np.int64).reshape(-1, 3), os.path.basename(source)
+    if low.endswith(".fbx"):
+        import sdk_mesh                                         # the mesh writer's own reading, so the picture shows what would be staged
+        P = []; F = []; base = 0
+        for _, subs in sdk_mesh.submeshes(source):
+            for sub in subs:
+                p = np.asarray(sub["P"], np.float64)[np.asarray(sub["pi"], np.int64)]; P.append(p); F.append(np.asarray(sub["F"], np.int64) + base); base += len(p)
+        return np.concatenate(P), np.concatenate(F), os.path.basename(source)
     if low.endswith((".psk", ".pskx")):
         import psk
         m = psk.read(source)
