@@ -369,8 +369,6 @@ Not verified:
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a
   game update.
-- The packaged asset commands running in game.
-- The harness with modules other than the reference project.
 - Multiplayer and anti-cheat. The SDK is for single player only.
 
 Workflow-specific conventions: skinned FBX bones must be named `bip01_<name>_<index>`; the ragdoll written by
