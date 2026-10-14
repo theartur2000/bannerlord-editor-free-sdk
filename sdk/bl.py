@@ -290,6 +290,12 @@ def build(a):
     return {"dll": dll, "bytes": os.path.getsize(dll), "seconds": round(time.time() - t, 1), "warnings": warnings[:20], "errors": []}
 
 
+def _is_link(path):
+    """A symbolic link or a Windows directory junction (os.path.islink misses junctions before Python 3.12)."""
+    try: return os.path.islink(path) or bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)   # FILE_ATTRIBUTE_REPARSE_POINT
+    except OSError: return False
+
+
 def _shader_cache(module_name, scene_id):
     return os.path.join(os.environ.get("ProgramData", "C:\\ProgramData"), "Mount and Blade II Bannerlord", "Shaders", "TerrainShaders", module_name, scene_id)
 
@@ -302,8 +308,11 @@ def deploy(a):
     plan = [("SubModule.xml", os.path.join(dst, "SubModule.xml"))]
     dll = os.path.join(d, "build", mod + ".dll")
     if os.path.isfile(dll): plan += [(dll, os.path.join(dst, "bin", sub, mod + ".dll")) for sub in ("Win64_Shipping_Client", "Win64_Shipping_wEditor")]
+    links = []                                                   # linked folders (the map's 2.1 GB of tiles): linked again, never copied
     for top in ("ModuleData", "Prefabs", "GUI") + (("SceneObj",) if a.get("scenes", True) else ()):
-        for root, _, files in os.walk(os.path.join(d, top)):
+        for root, dirs, files in os.walk(os.path.join(d, top)):
+            for sub in list(dirs):
+                if _is_link(os.path.join(root, sub)): dirs.remove(sub); links.append((os.path.join(root, sub), os.path.join(dst, os.path.relpath(os.path.join(root, sub), d))))
             for fn in files:
                 src = os.path.join(root, fn); plan.append((src, os.path.join(dst, os.path.relpath(src, d))))
     plan = [(s if os.path.isabs(s) else os.path.join(d, s), t) for s, t in plan]
@@ -312,10 +321,15 @@ def deploy(a):
     if not dry:
         for s, t in plan:
             os.makedirs(os.path.dirname(t), exist_ok=True); shutil.copyfile(s, t)
+        for s, t in links:
+            if os.path.lexists(t): continue
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", t, os.path.realpath(s)], capture_output=True, text=True)
+            if r.returncode != 0: raise BlError("could not link %s: %s" % (t, (r.stdout + r.stderr).strip()))
         for sc in scenes:                                        # the game keeps the terrain shader it compiled per module and scene name
             cache = _shader_cache(mod, sc)
             if os.path.isdir(cache): shutil.rmtree(cache); cleared.append(sc)
-    return {"module_folder": dst, "files": len(plan), "dll": os.path.isfile(dll), "scenes": scenes, "terrain_shader_caches_cleared": cleared,
+    return {"module_folder": dst, "files": len(plan), "linked_folders": [os.path.relpath(t, dst) for _, t in links], "dll": os.path.isfile(dll), "scenes": scenes, "terrain_shader_caches_cleared": cleared,
             "warning": None if os.path.isfile(dll) else "no build/%s.dll yet: run `bl build` (the module does not load without it)" % mod}
 
 
@@ -847,7 +861,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, sprite, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

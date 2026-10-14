@@ -25,6 +25,8 @@
 //   bone id= [index=]                      a bone of a spawned prefab's skeleton now (position, up axis, relative to the
 //                                          prefab), and the models on the skeleton and the entity with its bounding box
 //   settlement id=                         a settlement of the running campaign: name, position, culture, owner
+//   mapheight x= y=                        the campaign map's height at a position (map units)
+//   mapmove x= y=                          put the player's party at a campaign map position (the map camera follows it)
 //   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
 //   quit                                   quit the game
@@ -225,6 +227,21 @@ namespace __MOD__
                     if (st == null) throw new Exception("no settlement " + a["id"]);
                     r["name"] = st.Name.ToString(); Vec2 sp = st.GatePosition.ToVec2(); r["gate_position"] = new[] { sp.x, sp.y };
                     r["culture"] = st.Culture?.StringId; r["owner_clan"] = st.OwnerClan?.StringId;
+                    return r;
+                }
+                case "mapheight":
+                {
+                    if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
+                    var at = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true); float h = 0f;
+                    r["found"] = TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper.GetHeightAtPoint(in at, ref h); r["height"] = h;
+                    return r;
+                }
+                case "mapmove":
+                {
+                    if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
+                    var to = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true);
+                    TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position = to;
+                    Vec2 now = TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position.ToVec2(); r["party"] = new[] { now.x, now.y };
                     return r;
                 }
                 case "sprite":

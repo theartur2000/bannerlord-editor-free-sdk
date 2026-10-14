@@ -134,7 +134,7 @@ Start with B1 to B2: they are small and already make procedural level work possi
 | B5 | done by decoding: `sdk/navmesh.py` reads and writes versions 7 to 9 (485 shipped files); a grid navmesh over walkable ground is enough for 200 against 200 |
 | B6 | partly: trees, grass and bushes through the template's flora and detail layers, water by level, no light bake needed for battlefields. `flora.bin` itself is not decoded (battlefields ship it empty) |
 | B7 | battle only |
-| B8 | read only: `sdk/worldmap.py` gives heights, biome types and settlements of the campaign map |
+| B8 | campaign data changes through XSLT patches (`data.set`, verified in game: a renamed town); a module's own `Main_map` scene is loaded, but the map's heights come from its tile set (`TileSets/WorldMap.gts`, not decoded), so terrain edits have no effect yet. Read access: `sdk/worldmap.py` |
 
 The C# runtime library decided on in section 8 exists as the generator inside the GenFields module
 (`mod/GenFields/src/gen` of [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)): a new field for every campaign battle in under two
