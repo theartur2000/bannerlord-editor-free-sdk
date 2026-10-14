@@ -889,56 +889,102 @@ DATA_NAMES = {TEX_SETTINGS: "import settings", TEX_SRCINFO: "source info", TEX_P
 # ---- clip caches: "Optimized animation" in RuntimeDataCache/<clip package>.rdc (layout in the header) ----
 OPT_ANIM = bytes.fromhex("6f131e6cb7d0ff41bb7a275f3630db25")
 
+def _bits_at(d, o, start, width):
+    """`width` bits at bit `start` of the little-endian bit stream beginning at byte o (a slice, not a shift of the whole stream)."""
+    return int.from_bytes(d[o + (start >> 3):o + ((start + width + 7) >> 3)], "little") >> (start & 7) & ((1 << width) - 1)
+
+def _put_rows(rows, nbytes):
+    """Little-endian bit stream of equal-width rows given as lists of (value, bits); the stream is nbytes long."""
+    out = bytearray(nbytes); at = 0
+    for row in rows:
+        v, p = _bitfield(row)
+        if p:
+            b0 = at >> 3; b1 = (at + p + 7) >> 3
+            out[b0:b1] = ((int.from_bytes(out[b0:b1], "little") | v << (at & 7)).to_bytes(b1 - b0, "little"))
+        at += p
+    return bytes(out)
+
 def _bitfield(fields):
     v = p = 0
     for x, n in fields: v |= (int(x) & ((1 << n) - 1)) << p; p += n
     return v, p
 
-def parse_optanim(d):
-    """Fields of an Optimized animation blob (all 103 editor clip caches re-pack byte-identical)."""
-    ver, one, end1, end2, nb, z = struct.unpack_from("<6I", d, 0)
-    if ver != 2 or not 0 < nb <= 256: raise ValueError("not an Optimized animation this reader knows (version %d, %d bones)" % (ver, nb))
-    o = 0x18; bones = []
-    for b in range(nb):
-        n, bits, tb = struct.unpack_from("<HBB", d, o); mx, mn = struct.unpack_from("<2f", d, o + 4)
-        nbits = n * (3 + 3 * bits + tb); v = int.from_bytes(d[o + 12:o + 12 + (nbits + 7) // 8], "little"); p = 0; keys = []
-        for _ in range(n):
-            a = v >> p & 7; p += 3; c = []
-            for _ in range(3): c.append(v >> p & ((1 << bits) - 1)); p += bits
-            keys.append((v >> p & ((1 << tb) - 1), a, c)); p += tb
-        bones.append(dict(n=n, bits=bits, tb=tb, mx=mx, mn=mn, keys=keys))
-        o += 12 + 8 * ((nbits + 63) // 64) + (16 if b < nb - 1 else 12)
-    n, bits, tb = struct.unpack_from("<HBB", d, o); mx, mn = struct.unpack_from("<2f", d, o + 4)
-    if n == 0: raise NotImplementedError("clip cache without a root channel (only caches with a root position channel are read)")
-    nbits = n * (3 * bits + tb); v = int.from_bytes(d[o + 12:o + 12 + (nbits + 7) // 8], "little"); p = 0; keys = []
+def _qchan(d, o, extra):
+    """Compressed channel at o: u16 n, then (only when n > 0) bits, tb, max, min, the packed keys (whole 64-bit words) and 4
+    bytes that are always 0. `extra` is 1 for a bone rotation channel (3 bit smallest-three selector per key), 0 for the root."""
+    n, = struct.unpack_from("<H", d, o); o += 2
+    if not n: return dict(n=0, bits=0, tb=0, mx=0.0, mn=0.0, keys=[]), o
+    bits, tb = d[o], d[o + 1]; mx, mn = struct.unpack_from("<2f", d, o + 2); o += 10
+    nbits = n * (3 * extra + 3 * bits + tb); nbytes = 8 * ((nbits + 63) // 64)
+    if o + nbytes + 4 > len(d) or d[o + nbytes:o + nbytes + 4] != bytes(4): raise ValueError("compressed channel does not fit or its 4 byte tail is not zero")
+    p = 0; keys = []
     for _ in range(n):
+        a = 0
+        if extra: a = _bits_at(d, o, p, 3); p += 3
         c = []
-        for _ in range(3): c.append(v >> p & ((1 << bits) - 1)); p += bits
-        keys.append((v >> p & ((1 << tb) - 1), c)); p += tb
-    root = dict(n=n, bits=bits, tb=tb, mx=mx, mn=mn, keys=keys)
-    o += 12 + 8 * ((nbits + 63) // 64) + 4
+        for _ in range(3): c.append(_bits_at(d, o, p, bits)); p += bits
+        keys.append((_bits_at(d, o, p, tb), a, c) if extra else (_bits_at(d, o, p, tb), c)); p += tb
+    return dict(n=n, bits=bits, tb=tb, mx=mx, mn=mn, keys=keys), o + nbytes + 4
+
+def _pack_qchan(C, extra):
+    if not C or not C["n"]: return struct.pack("<H", 0)
+    rows = [([(k[1], 3)] if extra else []) + [(x, C["bits"]) for x in k[-1]] + [(k[0], C["tb"])] for k in C["keys"]]
+    nbits = C["n"] * (3 * extra + 3 * C["bits"] + C["tb"])
+    return struct.pack("<HBB2f", C["n"], C["bits"], C["tb"], C["mx"], C["mn"]) + _put_rows(rows, 8 * ((nbits + 63) // 64)) + bytes(4)
+
+def _rawchan(d, o):
+    """Raw key channel: u32 n, n times (f32), n x 4 f32 values. Returns ({t: [...], v: [(4 floats)]}, next offset)."""
+    n, = struct.unpack_from("<I", d, o); o += 4
+    if n > 1 << 20 or o + 20 * n > len(d): raise ValueError("raw key channel does not fit (%d keys)" % n)
+    t = list(struct.unpack_from("<%df" % n, d, o)); v = struct.unpack_from("<%df" % (4 * n), d, o + 4 * n)
+    return dict(t=t, v=[v[4 * i:4 * i + 4] for i in range(n)]), o + 20 * n
+
+def _pack_rawchan(C):
+    n = len(C["t"]) if C else 0
+    return struct.pack("<I%df%df" % (n, 4 * n), n, *C["t"], *[x for q in C["v"] for x in q]) if n else bytes(4)
+
+def parse_optanim(d):
+    """Fields of an Optimized animation blob (all 297 sampled Native clip caches and all 103 editor ones re-pack byte-identical).
+    Layout: u32 version 2, u32 flags (bit 0 = root position channel present, bit 2 = raw position keys on some bone), end keys x2, bone count; per bone three raw key channels
+    [0] positions (x, y, z, 0), [1] positions (x, y, z, FLT_MAX), [2] quaternions (w, x, y, z), the compressed rotation channel
+    following channel [0]; then the root channel (a bare u16 0 when there is none), the frame table and the size trailer.
+    bone["raw"] = three {t, v} channels (empty lists when the bone has none); root is None without a root channel."""
+    ver, flags, end1, end2, nb = struct.unpack_from("<5I", d, 0)
+    if ver != 2 or not 0 < nb <= 256: raise ValueError("not an Optimized animation this reader knows (version %d, %d bones)" % (ver, nb))
+    o = 20; bones = []
+    for b in range(nb):
+        raw = []
+        for k in range(3):
+            c, o = _rawchan(d, o); raw.append(c)
+            if k == 0: B, o = _qchan(d, o, 1)
+        B["raw"] = raw; bones.append(B)
+    root, o = _qchan(d, o, 0)
     A, B = struct.unpack_from("<II", d, o); nt, w = d[o + 8], d[o + 9]; o += 10
     if B > 1 << 20 or nt != nb: raise ValueError("frame table does not fit (%d frames, %d bone columns for %d bones)" % (B, nt, nb))
-    v = int.from_bytes(d[o:o + (B * nt * w + 7) // 8], "little")
-    table = [[v >> ((f * nt + b) * w) & ((1 << w) - 1) for b in range(nt)] for f in range(B)]
-    return dict(ver=ver, one=one, end1=end1, end2=end2, z=z, bones=bones, root=root, A=A, B=B, w=w, table=table,
+    nbytes = (B * nt * w + 31) // 32 * 4
+    if o + nbytes + 6 != len(d): raise ValueError("frame table does not end at the trailer")
+    table = [[_bits_at(d, o, (f * nt + b) * w, w) for b in range(nt)] for f in range(B)]
+    return dict(ver=ver, flags=flags, end1=end1, end2=end2, bones=bones, root=root if root["n"] else None, A=A, B=B, w=w, table=table,
                 last=struct.unpack_from("<I", d, len(d) - 4)[0])
 
+def _optanim_size(r, nb, rawkeys):
+    """size_in_bytes the engine writes in the trailer: 0x60 + the compressed channels + the frame table + 0x2a + 0x4a x bones
+    + 20 x raw keys (a channel counts its keys' bytes plus 8 for the bits and range, rounded to whole 64-bit words, and 4)."""
+    t = lambda C, e: 8 * ((C["n"] * (3 * e + 3 * C["bits"] + C["tb"]) + 63) // 64) + 4 if C and C["n"] else 0
+    return 0x60 + sum(t(B, 1) for B in r["bones"]) + t(r["root"], 0) + (r["B"] * nb * r["w"] + 31) // 32 * 4 + 0x2a + 0x4a * nb + 20 * rawkeys
+
 def pack_optanim(r):
-    nb = len(r["bones"])
-    out = bytearray(struct.pack("<6I", r.get("ver", 2), r.get("one", 1), r["end1"], r["end2"], nb, r.get("z", 0)))
-    for b, B in enumerate(r["bones"]):
-        v, p = _bitfield([f for t, a, c in B["keys"] for f in [(a, 3)] + [(x, B["bits"]) for x in c] + [(t, B["tb"])]])
-        out += struct.pack("<HBB2f", B["n"], B["bits"], B["tb"], B["mx"], B["mn"]) + v.to_bytes(8 * ((p + 63) // 64), "little") \
-            + bytes(16 if b < nb - 1 else 12)
-    R = r["root"]
-    v, p = _bitfield([f for t, c in R["keys"] for f in [(x, R["bits"]) for x in c] + [(t, R["tb"])]])
-    out += struct.pack("<HBB2f", R["n"], R["bits"], R["tb"], R["mx"], R["mn"]) + v.to_bytes(8 * ((p + 63) // 64), "little") + bytes(4)
+    nb = len(r["bones"]); R = r.get("root")
+    rawkeys = sum(len(c["t"]) for B in r["bones"] for c in B.get("raw", ()) if c)
+    flags = r["flags"] if "flags" in r else (1 if R else 0) | (4 if any(B.get("raw") and B["raw"][0] and B["raw"][0]["t"] for B in r["bones"]) else 0)
+    out = bytearray(struct.pack("<5I", r.get("ver", 2), flags, r["end1"], r["end2"], nb))
+    for B in r["bones"]:
+        raw = B.get("raw") or [None] * 3
+        out += _pack_rawchan(raw[0]) + _pack_qchan(B, 1) + _pack_rawchan(raw[1]) + _pack_rawchan(raw[2])
+    out += _pack_qchan(R, 0)
     out += struct.pack("<IIBB", r["A"], r["B"], nb, r["w"])
-    v, p = _bitfield([(x, r["w"]) for row in r["table"] for x in row])
-    out += v.to_bytes((p + 7) // 8, "little")
-    out += bytes((len(out) + 2 + 3) // 4 * 4 - len(out))
-    out += struct.pack("<I", len(out) + 4 + 50 * len(r["bones"]) + 90)   # runtime size: blob + 50 x bones + 90 (28 bones: 1490)
+    out += _put_rows([[(x, r["w"]) for x in row] for row in r["table"]], (r["B"] * nb * r["w"] + 31) // 32 * 4) + bytes(2)
+    out += struct.pack("<I", _optanim_size(r, nb, rawkeys))
     return bytes(out)
 
 def decode_anim_blob(d):
@@ -1055,8 +1101,8 @@ def optanim_values(r):
             cc = [B["mn"] + x / M * (B["mx"] - B["mn"]) for x in c]
             q = cc[:]; q.insert(a >> 1, np.sqrt(max(0.0, 1 - sum(x * x for x in cc)))); q = np.array(q)
             out[(b, t)] = -q if a & 1 else q
-    R = r["root"]; M = (1 << R["bits"]) - 1
-    root = {t: np.array([R["mn"] + x / M * (R["mx"] - R["mn"]) for x in c]) for t, c in R["keys"]}
+    R = r["root"]; M = (1 << R["bits"]) - 1 if R else 1
+    root = {t: np.array([R["mn"] + x / M * (R["mx"] - R["mn"]) for x in c]) for t, c in R["keys"]} if R else {}
     return out, root
 
 def clip_fields(path):
@@ -1320,7 +1366,11 @@ def main(argv):
               E["h1"].hex(), E["h2"].hex()))
         for b, B in enumerate(r["bones"]):
             print("  bone %2d: %3d keys, %2d bits, range %.4f..%.4f" % (b, B["n"], B["bits"], B["mn"], B["mx"]))
-        R = r["root"]; print("  root:    %3d keys, %2d bits, range %.4f..%.4f" % (R["n"], R["bits"], R["mn"], R["mx"]))
+            for k, c in enumerate(B["raw"]):
+                if c["t"]: print("          raw channel %d: %d keys, times %g..%g" % (k, len(c["t"]), c["t"][0], c["t"][-1]))
+        R = r["root"]
+        if R: print("  root:    %3d keys, %2d bits, range %.4f..%.4f" % (R["n"], R["bits"], R["mn"], R["mx"]))
+        else: print("  root:    none")
     elif cmd == "anim":   # tpac.py anim <fbx> [...] [--out DIR] [--force]: FBX single take -> <fbx name>_geo.tpac
         a = sys.argv[2:]; out_dir = a[a.index("--out") + 1] if "--out" in a else None
         for f in [x for i, x in enumerate(a) if x.lower().endswith(".fbx")]:

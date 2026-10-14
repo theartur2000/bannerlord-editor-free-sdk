@@ -8,7 +8,8 @@
 #   textures   Native texture records with inline pixels: the record re-packs byte-identical, the pixel hash rule holds, the
 #              import settings round trip, and a decoded top mip re-encoded by the SDK's encoder decodes within a PSNR bound
 #              (DXT1, DXT5, BC4, BC5, RGBA8; BC7 has no decoder here, so only its record, hash and size are checked)
-#   caches     Native clip caches ("Optimized animation"): parse and re-pack byte-identical, size trailer follows the engine rule
+#   caches     Native clip caches ("Optimized animation"), with and without a root channel, with and without raw key channels: parse and
+#              re-pack byte-identical, size trailer follows the engine rule; any class that still fails is named with its count
 #   skeletons  Native human / horse / camel skeleton definition and user data re-pack byte-identical
 #   synthetic  a tiny made-up skeleton, animation, clip, clip cache, texture, material and mesh written to a scratch folder,
 #              read back, and run through the validators, which must pass them and must catch four planted faults
@@ -148,7 +149,7 @@ def section_textures(per_format):
 
 # ------------------------------------------------------------------------------------------------------------------ caches
 def section_caches(limit):
-    t0 = time.time(); stats = collections.Counter(); notes = []; bones = collections.Counter()
+    t0 = time.time(); stats = collections.Counter(); notes = []; bones = collections.Counter(); classes = collections.Counter(); unread = collections.Counter()
     pkgs = sorted(glob.glob(os.path.join(config.NATIVE, "EmAssetPackages", "animations", "*", "*.tpac")))
     per = max(1, limit // max(1, len(pkgs)))
     for p in pkgs:
@@ -169,21 +170,23 @@ def section_caches(limit):
                         elif len(notes) < 4: notes.append("%s: size rule differs" % it["name"])
                     except Exception as ex:
                         if len(notes) < 4: notes.append("%s: layout walk: %s" % (it["name"], ex))
+                    # layout class of this cache by the engine walk: with / without the root position channel, with / without raw key channels
+                    cls = ("no root channel" if not L["root"][0] else "root channel") + (" + raw keys" if L["raw_keys"] else "") if L else "layout walk failed"
+                    classes[cls] += 1
                     try:
                         r = tpac.parse_optanim(d); bones[len(r["bones"])] += 1; stats["parsed"] += 1
                         if tpac.pack_optanim(r) == d: stats["re-pack identical"] += 1
-                        elif len(notes) < 4: notes.append("%s (%d bones): re-pack differs" % (it["name"], len(r["bones"])))
-                    except NotImplementedError:
-                        stats["no root channel (not read)"] += 1
-                    except Exception as ex:
-                        if L and L["raw_keys"] > 0: stats["raw key channels (not read)"] += 1   # a layout variant the writer does not produce
                         else:
-                            stats["unreadable"] += 1
-                            if len(notes) < 4: notes.append("%s: %s" % (it["name"], ex))
-    ok = stats["parsed"] > 0 and stats["re-pack identical"] == stats["parsed"] and stats["size rule"] == stats["caches"] and not stats["unreadable"]
-    report("caches", ok, "%d Native clip caches: size trailer rule %d; %d read by the SDK (bone counts %s), %d of them re-pack byte-identical; not read (layout variants the SDK does not write): %d without a root channel, %d with raw key channels (%.0f s)"
+                            unread["re-pack differs: " + cls] += 1
+                            if len(notes) < 4: notes.append("%s (%d bones): re-pack differs" % (it["name"], len(r["bones"])))
+                    except Exception as ex:
+                        unread["not read: " + cls] += 1
+                        if len(notes) < 4: notes.append("%s: %s" % (it["name"], ex))
+    ok = stats["parsed"] > 0 and stats["parsed"] == stats["caches"] and stats["re-pack identical"] == stats["parsed"] and stats["size rule"] == stats["caches"] and not unread
+    report("caches", ok, "%d Native clip caches: size trailer rule %d; %d read by the SDK (bone counts %s), %d of them re-pack byte-identical; layout classes %s; still failing: %s (%.0f s)"
            % (stats["caches"], stats["size rule"], stats["parsed"], ", ".join("%d:%d" % kv for kv in sorted(bones.items())[:6]),
-              stats["re-pack identical"], stats["no root channel (not read)"], stats["raw key channels (not read)"], time.time() - t0), notes)
+              stats["re-pack identical"], ", ".join("%s %d" % kv for kv in sorted(classes.items())),
+              ", ".join("%s %d" % kv for kv in sorted(unread.items())) or "none", time.time() - t0), notes)
 
 
 def section_skeletons():
