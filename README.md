@@ -38,6 +38,13 @@ thousands of assets practical. It was developed for a total conversion with abou
 - **Package merging**: combines thousands of small packages into a few. In one mod, 34,000 assets were merged into
   26 packages, reducing package load time from 25.7 s (280 s cold) to 5.6 s.
 - **Self-test**: rebuilds the game's own packages and verifies the output is byte-identical.
+- **One command line for agents**: `bl` wraps all of the above. Every command prints one JSON object, and every command
+  that changes files has a dry run. The same commands are available as MCP tools.
+- **Project scaffold**: `bl new` creates a module that builds and deploys as it is, with an unattended test driver.
+- **Previews without the game**: a mesh from six sides and a scene from above, as PNG, in about a second.
+- **Heightmap import and export**: a playable scene from a greyscale image, and any scene's terrain as an image.
+- **Scenes without a restart**: scratch scene slots that can be filled while the game runs.
+- **Compatibility report**: `bl compat` names every file format that no longer matches after a game update.
 - **Test harness and crash tools**: PowerShell scripts for unattended game runs (`harness/`) and helpers for
   minidumps and Ghidra (`dump/`).
 
@@ -45,12 +52,49 @@ thousands of assets practical. It was developed for a total conversion with abou
 
 ```powershell
 pip install -r requirements.txt
-python sdk/selftest.py                                  # reads the install, changes nothing
-$env:BANNERLORD_MODULE_DIR = "<game>\Modules\MyMod"
-python sdk/install.py texture rock_d.png                # stage a texture
-python sdk/install.py verify stage                      # run the validators
-python sdk/install.py install --dry                     # show what would be copied where
+bl doctor                                # what the SDK found: game, version, tools
+bl compat --quick                        # do the file formats match this game version (reads the install, changes nothing)
+bl new MyMod                             # a new module project
+cd MyMod
+bl build                                 # compiles it against the installed game
+bl asset texture rock_d.png              # stage a texture
+bl stage verify                          # run the validators
+bl install --dry                         # show what would be copied where
 ```
+
+`bl` is `bl.cmd` (or the `bl` shell script) in the repository root; add the folder to `PATH` or call it by its full
+path. It is the same as `python sdk/bl.py`.
+
+## Command line for agents
+
+`bl` is designed to be driven by an AI agent or a script. Every command prints exactly one JSON object
+(`{"ok": true, "result": {...}}` or `{"ok": false, "error": "...", "hint": "..."}`), the exit code is 0 or 1, and
+every command that changes files accepts `--dry`. `bl commands` returns all commands with a JSON Schema of their
+arguments. [docs/AGENTS.md](docs/AGENTS.md) is the guide written for agents.
+
+| Group | Commands |
+|---|---|
+| Machine | `doctor`, `commands`, `compat` |
+| Project | `new`, `build`, `deploy`, `run`, `workshop.config` |
+| Assets | `asset.texture`, `asset.material`, `asset.mesh`, `asset.skeleton`, `asset.anim`, `asset.clip`, `stage.list`, `stage.verify`, `install`, `revert`, `status` |
+| Scenes | `scene.list`, `scene.info`, `scene.entities`, `scene.ground`, `scene.add_entity`, `scene.remove_entities`, `scene.copy`, `scene.check`, `scene.preview`, `scene.heightmap`, `scene.from_heightmap`, `scene.register` |
+| Meshes | `mesh.find`, `mesh.info`, `mesh.preview`, `mesh.export` |
+| Campaign map | `worldmap.at`, `worldmap.settlements` |
+| Scene slots | `slots.create`, `slots.state`, `slots.fill`, `slots.reset` |
+| Running game | `live`, `live.enable` |
+
+The same commands are MCP tools. Register the server with an agent, for example in `.mcp.json`:
+
+```json
+{"mcpServers": {"bannerlord": {"command": "python", "args": ["<repo>/sdk/mcp_server.py"]}}}
+```
+
+Safety rules built into the command line:
+
+- Nothing is written into the game folder while the game runs or while another session holds the game lock.
+- Scenes of the game's own modules are never changed; `scene.copy` makes a working copy.
+- `run` starts the game only with `--launch`.
+- `workshop.config` writes the file for the game's Workshop uploader and stops there. Uploading is a manual step.
 
 ## Requirements
 
@@ -59,6 +103,8 @@ python sdk/install.py install --dry                     # show what would be cop
 - Mount & Blade II: Bannerlord on Windows. The Modding Kit is **not** required.
 - For `dump/`: `pip install minidump`. Ghidra and JDK 21 are required only for `RE.java`.
 - For `harness/`: PowerShell 5.1 and a small C# component in the module under test (see [Test harness](#test-harness)).
+  A project made with `bl new` contains one.
+- For `bl build`: the .NET SDK (any version that can build `net472`). `BL_DOTNET` can point at a specific `dotnet.exe`.
 
 ## Project status
 
@@ -67,7 +113,10 @@ python sdk/install.py install --dry                     # show what would be cop
 | File formats | Verified by byte-identical round trips against the game's own files (see [Self-test](#self-test)). |
 | Scene tools | Verified in the unmodified game: generated battle maps, 200 vs 200 battles, custom textures and models. |
 | Asset commands | Pass the self-test. The scripts they were packaged from built a large mod that runs in game; the packaged commands themselves have not yet been run in game. |
-| Other game versions | Untested. |
+| Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. A scaffolded project compiles against the game; its test driver and bridge have not been run in game yet. |
+| Heightmap import | Verified offline: a shipped scene exported and imported again has identical heights, and its files pass `scene.check`. Not yet loaded in game. |
+| Workshop upload file | Written to the format the game's uploader reads. Not verified by an upload. |
+| Other game versions | Untested. `bl compat` reports what still matches. |
 
 Details are in [Verification](#verification).
 
@@ -206,6 +255,13 @@ python sdk/install.py status
 | `sdk/tw_formats.py` | engine-exact details (data type versions, cache rules, size trailers) and a second reader |
 | `sdk/templates.py`, `sdk/config.py`, `sdk/pngio.py`, `sdk/fbx_bones.py` | templates from Native, paths, PNG, FBX reader |
 | `sdk/selftest.py` | the self-test below |
+| `sdk/bl.py` | the `bl` command line: every command of the SDK with JSON output and dry runs |
+| `sdk/mcp_server.py` | the same commands as MCP tools over stdio |
+| `sdk/scaffold.py`, `sdk/scaffold/` | `bl new`: project files and the C# templates (entry point, test driver, scene slots, bridge) |
+| `sdk/preview.py` | pictures without the game: a mesh from six sides, a scene from above; `mesh`, `scene` |
+| `sdk/heightmap.py` | a scene from a heightmap image and a scene's heights as an image; `export`, `scene` |
+| `sdk/slots.py` | scratch scene slots: scene folders that can be filled while the game runs |
+| `sdk/bridge.py` | the outside half of the bridge into the running game (`bl live`) |
 | `harness/` | PowerShell scripts that drive the game unattended |
 | `dump/` | minidump helpers and the headless Ghidra batch script |
 
@@ -332,8 +388,10 @@ The formats and engine rules are documented in the
 ## Repository layout
 
 ```
+bl, bl.cmd      the command line (sdk/bl.py)
 sdk/            library and command-line tools
-docs/           ROADMAP.md, images/
+tests/          tests that need no game (run on GitHub for every push)
+docs/           AGENTS.md, ROADMAP.md, images/
 harness/        scripts for unattended game runs
 dump/           minidump helpers, RE.java, re.ps1
 ```

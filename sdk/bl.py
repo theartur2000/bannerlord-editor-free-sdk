@@ -684,6 +684,34 @@ def slots_reset(a):
     except ValueError as e: raise BlError(str(e))
 
 
+# ---------------------------------------------------------------- publishing
+
+@command("workshop.config", "Writes the file the game's own Steam Workshop uploader takes (a new item, or an update of one). Does not upload.",
+         [P("description", help="the item's description text", required=True), P("image", help="the preview picture (png or jpg)", required=True),
+          P("tags", "list", help="Workshop tags, for example Singleplayer,Maps"), P("visibility", default="Private", choices=("Private", "FriendsOnly", "Public")),
+          P("change_notes", default=""), P("item_id", help="the id of an existing Workshop item to update (without it a new item is created)"),
+          P("out", help="the file to write (default: <project>/workshop/upload.xml)")], writes=True)
+def workshop_config(a):
+    from xml.sax.saxutils import quoteattr
+    c = _cfg(); d, pj = _project(); m = _module_dir()
+    out = os.path.abspath(a.get("out") or os.path.join(d or ".", "workshop", "upload.xml"))
+    img = os.path.abspath(a["image"])
+    if not os.path.isfile(img): raise BlError("no picture at %s" % img)
+    # The uploader takes the tasks from the first node of the file, so the file must not start with an XML declaration.
+    first = '\t<GetItem>\n\t\t<ItemId Value=%s/>\n\t</GetItem>\n' % quoteattr(str(a["item_id"])) if a.get("item_id") else "\t<CreateItem/>\n"
+    tags = "".join("\t\t\t<Tag Value=%s/>\n" % quoteattr(t) for t in (a.get("tags") or ()))
+    text = ("<Tasks>\n" + first + "\t<UpdateItem>\n\t\t<ModuleFolder Value=%s/>\n\t\t<ItemDescription Value=%s/>\n\t\t<Tags>\n%s\t\t</Tags>\n"
+            "\t\t<Image Value=%s/>\n\t\t<ChangeNotes Value=%s/>\n\t\t<Visibility Value=%s/>\n\t</UpdateItem>\n</Tasks>\n") % (
+        quoteattr(m), quoteattr(a["description"]), tags, quoteattr(img), quoteattr(a.get("change_notes") or ""), quoteattr(a.get("visibility") or "Private"))
+    if not a.get("dry"):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8", newline="\n") as f: f.write(text)
+    exe = os.path.join(c.GAME, "bin", "Win64_Shipping_Client", "TaleWorlds.MountAndBlade.SteamWorkshop.exe")
+    return {"file": out, "written": not a.get("dry"), "module_folder": m, "module_installed": os.path.isfile(os.path.join(m, "SubModule.xml")),
+            "creates_new_item": not a.get("item_id"), "visibility": a.get("visibility") or "Private",
+            "to_upload": 'run "%s" "%s" yourself, with Steam running: it publishes under the logged-in Steam account; the item takes its title from the module name' % (exe, out)}
+
+
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "

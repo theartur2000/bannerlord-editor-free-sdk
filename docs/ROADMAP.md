@@ -149,6 +149,19 @@ Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py
 | CI for everything that needs no game | synthetic tests run on GitHub |
 | Worked example mod (original content) | the first `examples/` entry for the knowledge-base repo |
 
+**Where stream C stands (2026-10-13).**
+
+| Item | State |
+|---|---|
+| One CLI | done: `sdk/bl.py`, 43 commands, one JSON object per call, `--dry` on everything that writes |
+| MCP server | done: `sdk/mcp_server.py`, the same registry over stdio, no dependencies |
+| Bridge module | written and compiled: a file-based command channel (`Bridge.cs` in a scaffolded project, `bl live`): state, teleport, look, screenshot, spawn, remove. Not yet run in game |
+| Project layout and `bl new` | done: a scaffolded project compiles against the game and deploys. Its test driver has not been run in game from the scaffold |
+| `bl run` | done as a wrapper of the existing harness; starts the game only with `--launch` |
+| Game-version check | done: `bl doctor` and `bl compat` |
+| CI | done: `tests/run_offline.py`, 14 tests without a game, on Windows and Linux |
+| Worked example mod | Procedural Battlefields, in its own repository |
+
 ### D. Everything else, on demand
 Gauntlet UI (XML prefabs, sprite sheets: generators already ship with the game), shaders and post effects, banners and
 icons, cutscene and camera scripting, save-game reading, multiplayer and dedicated server content. Each gets decoded when a
