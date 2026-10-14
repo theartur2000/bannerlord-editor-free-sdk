@@ -24,10 +24,12 @@ thousands of assets practical. It was developed for a total conversion with abou
 
 ## Features
 
-- **Asset writers**: textures (BC1, BC3, BC4, BC5, BC7, RGBA8), materials, static and skinned meshes, skeletons with
+- **Asset writers**: textures (BC1, BC2, BC3, BC4, BC5, BC6H, BC7, RGBA8, R8, R16 and half-float formats), materials, static and skinned meshes, skeletons with
   ragdoll physics, skeletal animations, animation clips and their runtime caches.
 - **Scene writers**: `scene.xscene`, `terrain.bin` and `navmesh.bin` from height arrays, layer masks and entity
   lists, using a shipped scene as the template for texture layers and atmosphere.
+- **Collision bodies**: reads and rewrites every physics shape the game ships byte for byte, and writes new shapes
+  made of capsules and spheres. Convex hulls and triangle meshes need PhysX cooking, which is not implemented yet.
 - **Readers for shipped content**: any mesh by name, every battle scene and its rock placement, and the campaign map
   as a height and terrain grid.
 - **Custom assets in scenes**: third-party textures, materials and models (PSK or FBX) as terrain layers and
@@ -78,7 +80,7 @@ arguments. [docs/AGENTS.md](docs/AGENTS.md) is the guide written for agents.
 | Project | `new`, `build`, `deploy`, `run`, `workshop.config` |
 | Assets | `asset.texture`, `asset.material`, `asset.mesh`, `asset.skeleton`, `asset.anim`, `asset.clip`, `stage.list`, `stage.verify`, `install`, `revert`, `status` |
 | Scenes | `scene.list`, `scene.info`, `scene.entities`, `scene.ground`, `scene.add_entity`, `scene.remove_entities`, `scene.copy`, `scene.check`, `scene.preview`, `scene.heightmap`, `scene.from_heightmap`, `scene.register` |
-| Meshes | `mesh.find`, `mesh.info`, `mesh.preview`, `mesh.export` |
+| Meshes | `mesh.find`, `mesh.info`, `mesh.preview`, `mesh.export`, `physics.info` |
 | Campaign map | `worldmap.at`, `worldmap.settlements` |
 | Scene slots | `slots.create`, `slots.state`, `slots.fill`, `slots.reset` |
 | Running game | `live`, `live.enable` |
@@ -234,7 +236,7 @@ python sdk/install.py status
 | Script | Description |
 |---|---|
 | `sdk/install.py` | stage writers, `verify`, `install`, `revert`, `status`, `inspect` |
-| `sdk/tpac.py` | the `.tpac` / `.rdc` reader and writer: textures (BC1, BC3, BC4, BC5, BC7 mode 6, RGBA8), materials, animations from FBX, clips, clip caches; `texture`, `tex`, `material`, `mtl`, `retex`, `anim`, `clip`, `clip-cache`, `optanim`, `owner`, `anims` |
+| `sdk/tpac.py` | the `.tpac` / `.rdc` reader and writer: textures (all twelve formats the game uses; encoders: BC7 mode 6, BC6H mode 11), materials, animations from FBX, clips, clip caches (every layout the game uses); `texture`, `tex`, `material`, `mtl`, `retex`, `anim`, `clip`, `clip-cache`, `optanim`, `owner`, `anims` |
 | `sdk/sdk_mesh.py` | FBX to metamesh packages and vertex-stream caches; `mesh`, `obj` |
 | `sdk/sdk_skeleton.py` | skeleton packages from FBX or glTF, Native skeleton readers |
 | `sdk/scene.py` | `scene.xscene` and other game XML read and written without changing a byte that was not edited; entities listed, added, moved, removed; `check`, `list` |
@@ -255,6 +257,8 @@ python sdk/install.py status
 | `sdk/tw_formats.py` | engine-exact details (data type versions, cache rules, size trailers) and a second reader |
 | `sdk/templates.py`, `sdk/config.py`, `sdk/pngio.py`, `sdk/fbx_bones.py` | templates from Native, paths, PNG, FBX reader |
 | `sdk/selftest.py` | the self-test below |
+| `sdk/texcodec.py` | block decoders and encoders for BC2, BC6H and BC7, and the uncompressed and half-float formats |
+| `sdk/physics.py` | physics shapes (collision bodies): read, write, round trip, build from capsules and spheres; `info`, `check`, `rebuild` |
 | `sdk/bl.py` | the `bl` command line: every command of the SDK with JSON output and dry runs |
 | `sdk/mcp_server.py` | the same commands as MCP tools over stdio |
 | `sdk/scaffold.py`, `sdk/scaffold/` | `bl new`: project files and the C# templates (entry point, test driver, scene slots, bridge) |
@@ -283,25 +287,33 @@ material package written by the editor or by the SDK.
 ## Self-test
 
 `python sdk/selftest.py` requires only a game install and writes only to `<SDK home>\stage\_selftest`. Reference
-output for game v1.4.8.119303 with default settings (42 s, condensed):
+output for game v1.4.8.119303 with default settings (about 45 s, condensed):
 
 ```
 PASS packages   200 of 200 sampled Native packages rebuild byte-identical (18495 items; AssetPackages 50/50, EmAssetPackages 150/150)
-PASS textures   24 Native textures: record re-pack identical 24, size rule 24, pixel hash rule 20; re-encode PSNR min: BC4 46.9, BC5 51.2, DXT1 48.7, DXT5 52.6 dB, RGBA8 exact
-PASS caches     297 Native clip caches: size trailer rule 297; 226 read by the SDK, 226 re-pack byte-identical; 71 are layout variants it does not read
+PASS textures   42 Native textures (12 formats): record re-pack identical 42, size rule 42, pixel hash rule 27 of 29, cubemap layout 8/8;
+                re-encode PSNR min: BC6H 37.3, BC7 39.7, DXT3 43.4 dB, ...; R8, R16, R16G16F, R16G16B16A16F, RGBA8 exact
+PASS codecs     29 of 29 checks
+PASS caches     297 Native clip caches: size trailer rule 297; 297 read by the SDK, 297 re-pack byte-identical
 PASS skeletons  3 of 3 Native skeletons re-pack byte-identical
+PASS physics    2922 Native physics shapes in 502 packages: round trip byte-identical 2922, rebuilt from their description 2922
 PASS synthetic  14 of 14 checks
-SUMMARY: 5 PASS, 0 FAIL
+SUMMARY: 7 PASS, 0 FAIL
 ```
 
 - `packages`: each sampled Native `.tpac` is parsed and rewritten with the SDK's package writer, and the bytes must
   equal the file. `--full --max-package-mb 100000` covers all of them: 1188 of 1188 (91,394 items, 86 s).
-- `textures`: BC4, BC5, BC7, DXT1, DXT5 and RGBA8 textures with inline pixels. The pixel-hash rule fails on 4 of 24
-  (BC4 and BC5 maps) for an unknown reason, so the check requires 80 percent. BC7 has no decoder, so only its
-  record, hash and size are checked. Native also uses DXT3, BC6H, R8 and float formats, which the SDK does not write
-  and the test skips.
-- `caches`: Native clips without a root channel (45) or with raw key channels (26) use layouts the SDK does not
-  produce. They are counted in the output.
+- `textures`: up to four textures with inline pixels per format, for all twelve formats Native uses. The record must
+  re-pack byte-identical and the size rule must hold, cubemap faces included. A decoded top mip is re-encoded and must
+  decode within a PSNR bound; the uncompressed formats must give back the stored bytes. The pixel-hash rule fails on a
+  few BC4 and BC5 maps for an unknown reason, so the check requires 80 percent. Textures that are not tested (over
+  12 MB of pixels) are named with counts in the output.
+- `codecs`: the BC2, BC6H and BC7 decoders against pinned results on seeded random blocks, and every format the texture
+  writer offers written from a synthetic picture and read back. The pins catch changes; correctness of the decoders
+  was established separately, against an independent decoder, on tens of thousands of random blocks.
+- `caches`: every layout of Native clip caches: with and without a root channel, with and without raw key channels.
+- `physics`: up to eight physics shapes per package: decoded and re-encoded byte-identical, and rebuilt byte-identical
+  from their own description.
 - `synthetic`: a synthetic skeleton, animation, clip, clip cache, texture, material and mesh are written, read back
   and validated. Four planted faults (65 bones, the IK rule, a 64 character clip name, an invalid `project.mbproj`
   id) must each be detected.
@@ -310,8 +322,10 @@ SUMMARY: 5 PASS, 0 FAIL
 
 Verified for game v1.4.8.119303:
 
-- Container and cache formats, textures, materials, skeletons and clip caches round-trip byte for byte (see
-  [Self-test](#self-test)). Further results are in the editor-free assets note under
+- Container and cache formats, textures, materials, skeletons, clip caches and physics shapes round-trip byte for byte
+  (see [Self-test](#self-test)). Beyond the self-test sample: all 12,558 Native texture records, 5,892 of 5,893 clip
+  caches in Native's animation packages (the one exception uses a different version word), and all 17,451 physics
+  shapes of every module. Further results are in the editor-free assets note under
   [Background](#background): 161 of 166 editor textures, 103 of 103 editor clip caches, all 150 Native asset
   packages.
 - Output of the packaged commands was compared with the scripts they were packaged from, on a clip, a movement clip,
@@ -322,6 +336,10 @@ Verified for game v1.4.8.119303:
   power-of-two textures and differs more for other sizes and for alpha.
 
 Not verified:
+
+- New collision bodies in game. Shapes of capsules and spheres are written in the game's format but have not been
+  loaded; convex hulls and triangle meshes cannot be written yet, because their cooked PhysX data is not produced.
+- Encoder quality beyond one mode: BC7 is written in mode 6 and BC6H in mode 11 only.
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a
   game update.

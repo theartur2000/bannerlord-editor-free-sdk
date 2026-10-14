@@ -102,6 +102,12 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 | Sound (FMOD banks) | exists outside the SDK | move into the SDK |
 | Run the published SDK in game once, with a screenshot | S | README no longer says "not run in game" |
 
+**Where stream A stands (2026-10-13).** Texture formats: done, all twelve formats Native uses are read and written
+(BC7 encoder mode 6, BC6H encoder mode 11). Clip caches: done, 297 of 297 in the self-test sample and 5,892 of 5,893 in
+Native. Physics shapes: read and written byte for byte (17,451 of 17,451); new shapes of capsules and spheres can be
+written; convex hulls and triangle meshes still need PhysX cooking. The next step for those is to call the cooking
+library the game ships (`PhysXCooking_64.dll`, section 7) rather than reimplement it.
+
 ### B. Scenes (L, the main new work)
 | Step | What | Size | Done when |
 |---|---|---|---|
@@ -153,7 +159,7 @@ Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py
 
 | Item | State |
 |---|---|
-| One CLI | done: `sdk/bl.py`, 43 commands, one JSON object per call, `--dry` on everything that writes |
+| One CLI | done: `sdk/bl.py`, 44 commands, one JSON object per call, `--dry` on everything that writes |
 | MCP server | done: `sdk/mcp_server.py`, the same registry over stdio, no dependencies |
 | Bridge module | written and compiled: a file-based command channel (`Bridge.cs` in a scaffolded project, `bl live`): state, teleport, look, screenshot, spawn, remove. Not yet run in game |
 | Project layout and `bl new` | done: a scaffolded project compiles against the game and deploys. Its test driver has not been run in game from the scaffold |

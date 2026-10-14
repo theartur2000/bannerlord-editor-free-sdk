@@ -618,6 +618,26 @@ def mesh_export(a):
     return {"obj": os.path.abspath(a["out"]), "bytes": os.path.getsize(a["out"])}
 
 
+@command("physics.info", "The collision bodies (physics shapes) in a .tpac package: capsules, spheres, and triangle manifolds with their sizes.",
+         [P("package", help="a .tpac file", required=True), P("match", help="only shapes whose name contains this"), P("limit", "int", default=50)])
+def physics_info(a):
+    import physics
+    if not os.path.isfile(a["package"]): raise BlError("no file %s" % a["package"])
+    rows = []; m = (a.get("match") or "").lower()
+    for res in physics.resources(a["package"]):
+        if m and m not in res["name"].lower(): continue
+        d = physics.decode_resource(res)["desc"]
+        mans = d.get("manifolds") or []
+        def count(x, k):
+            v = x.get(k) if isinstance(x, dict) else None
+            return len(v) if v is not None else None
+        rows.append({"name": res["name"], "capsules": len(d.get("capsules") or []), "spheres": len(d.get("spheres") or []),
+                     "manifolds": [{"vertices": count(x, "vertices"), "faces": count(x, "face_index"), "materials": x.get("materials") if isinstance(x, dict) else None} for x in mans]})
+        if len(rows) >= int(a.get("limit") or 50): break
+    return {"package": os.path.abspath(a["package"]), "shapes": rows,
+            "note": "shapes of capsules and spheres can be written from scratch; hulls and triangle meshes need PhysX cooking, which the SDK cannot do yet"}
+
+
 # ---------------------------------------------------------------- the campaign map
 
 @command("worldmap.at", "What the campaign map has at a position: height, terrain type, the mix of terrain around it.",
