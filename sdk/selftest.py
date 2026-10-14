@@ -25,7 +25,8 @@
 #   morph      Native morph animations (poses of a face) and mesh edit data with key frames (face morph keys, cloth vertex keys, flag animations): decode and re-encode
 #              byte-identical (all of them with key frames, one plain one per package as a control; --morph N stops after N entries); a made-up mesh with key frames and a made-up pose written and read back; the real head's 101 keys named by skins.xml
 #   cloth      Native clothing materials of every submesh (all of them), cloth maps and cloth cooks (up to --cloth): re-pack byte-identical, structure checks; made-up map, cook
-#              and clothing block re-packed, the checks catch a planted fault
+#              and clothing block re-packed, the checks catch a planted fault; the same cooks re-cooked from their submeshes' edit data and the small maps rebuilt
+#              from their render and proxy meshes, compared byte for byte (N of M)
 #   particles  Native particles.tpac: every particle effect (all emitter versions), GPU particle record and vector field decodes and re-encodes byte-identical; blank effects of every
 #              emitter version; a shipped effect copied with a changed rate, size, life, colour, alpha and material, written, read back and compared with the original
 #   synthetic  a tiny made-up skeleton, animation, clip, clip cache, texture, material and mesh written to a scratch folder,
@@ -544,10 +545,27 @@ def section_cloth(limit):
     except Exception:
         import traceback
         notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("exception", False))
+    # the fabric cooker and the map writer against the shipped data of the same sample: every cook re-cooked from its submesh's edit data,
+    # the small maps rebuilt from the render and proxy edit data (render vertices x proxy triangles <= 300,000)
+    rc = dict(cooks=0, cooks_editor=0, cooks_other=0, maps=0, maps_identical=0, maps_index_identical=0, cook_diff={})
+    try:
+        rc = cloth.recook(cloth.packages("Native"), limit=limit, map_limit=300000)
+        same = rc["cooks_editor"] + rc["cooks_other"]
+        # measured on all 898 shipped cooks: most re-cook byte-identical; the rest differ in the per-particle inverse masses and normals by
+        # an ulp (cooked on a processor whose rsqrtss estimate differs) or were cooked from an older version of their mesh
+        check("re-cooked shipped cloth cooks: at least half byte-identical", rc["cooks"] and same * 2 >= rc["cooks"], "%d of %d" % (same, rc["cooks"]))
+        # maps: the same processor dependence in the weights (a few ulps), now and then enough to pick another triangle
+        check("rebuilt shipped cloth maps: at least half byte-identical", rc["maps"] and rc["maps_identical"] * 2 >= rc["maps"], "%d of %d" % (rc["maps_identical"], rc["maps"]))
+    except Exception:
+        import traceback
+        notes.append(traceback.format_exc().strip().splitlines()[-1]); checks.append(("re-cook exception", False))
     good = sum(1 for _, x in checks if x)
     report("cloth", ok and good == len(checks) and checks != [], "%d Native clothing blocks re-pack byte-identical %d; cloth maps %d of %d, cloth cooks %d of %d byte-identical (shipped records that disagree with their mesh: %d); "
-           "%d of %d made-up checks (%s) (%.0f s)" % (r["clothing"], r["clothing_identical"], r["maps_identical"], r["maps"], r["cooks_identical"], r["cooks"], r["map_problems"] + r["cook_problems"],
-           good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
+           "cooks re-cooked from their meshes byte-identical %d of %d (%d with the Modding Kit editor's constants, %d with another build's; differing parts %s); "
+           "maps rebuilt byte-identical %d of %d (same triangles %d); %d of %d made-up checks (%s) (%.0f s)" % (
+           r["clothing"], r["clothing_identical"], r["maps_identical"], r["maps"], r["cooks_identical"], r["cooks"], r["map_problems"] + r["cook_problems"],
+           rc["cooks_editor"] + rc["cooks_other"], rc["cooks"], rc["cooks_editor"], rc["cooks_other"], rc["cook_diff"] or "none",
+           rc["maps_identical"], rc["maps"], rc["maps_index_identical"], good, len(checks), ", ".join(n for n, x in checks if not x) or "all passed", time.time() - t0), notes)
 
 
 def section_particles():

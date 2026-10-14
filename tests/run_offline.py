@@ -597,6 +597,46 @@ def cloth_map_cook_and_clothing_block_round_trip():
 
 
 @test
+def cloth_fabric_cooker_and_map_writer_on_a_made_up_flag():
+    import cloth, sdk_mesh
+    # rsqrtss estimate: within the documented 1.5 x 2^-12 relative error, and one Newton step brings it to float precision
+    x = np.exp(np.random.RandomState(4).uniform(-30, 30, 5000)).astype(np.float32); exact = 1 / np.sqrt(x.astype(np.float64))
+    assert np.abs(cloth.rsqrt_estimate(x) / exact - 1).max() <= 1.5 * 2 ** -12 and np.abs(cloth._rsqrt(x) / exact - 1).max() < 1e-6
+    # a 6 x 5 flag in the XZ plane hanging from its top row (vertex colour alpha 0 = fixed, 255 = simulated)
+    nx, nz = 6, 5; P = np.array([(i * 0.2, 0, -j * 0.2, 1) for j in range(nz) for i in range(nx)], np.float32); n = len(P)
+    F = np.array([t for j in range(nz - 1) for i in range(nx - 1) for t in ((j * nx + i, (j + 1) * nx + i, j * nx + i + 1), (j * nx + i + 1, (j + 1) * nx + i, (j + 1) * nx + i + 1))], np.uint32)
+    c0 = np.where(np.arange(n) < nx, 0x00ffffff, 0xffffffff).astype(np.uint32)
+    assert cloth.cook_fabric(P, np.arange(n), np.full(n, 0x00ffffff, np.uint32), F) is None          # nothing simulated, nothing to cook
+    fab = cloth.cook_fabric(P, np.arange(n), c0, F); b = cloth.pack_fabric(fab); d = cloth.parse_fabric(b)
+    again = struct.pack("<6I", *d["header"]) + d["bounds"].astype("<f4").tobytes() + b"".join(struct.pack("<I", len(d["buffers"][k]) // cloth._FAB_SIZE.get(k, 4)) + d["buffers"][k] for k in cloth.FAB_BUFFERS)
+    assert again == b and cloth.recook_matches(b, fab) == ("editor", [])
+    scale, ncons, parts, first_sim, first_normal, corners = d["header"]
+    assert parts == n and first_sim == nx and first_normal == 0 and corners == 3 * len(F) and np.allclose(d["bounds"], [[0, 0, -0.8, 1], [1, 0, 0, 1]])
+    pairs = np.frombuffer(d["buffers"]["pairs"], "<u2").reshape(-1, 2).astype(int); rest = np.frombuffer(d["buffers"]["rest"], "<f4")
+    sets = np.frombuffer(d["buffers"]["sets"], "<u4").reshape(-1, 8); Pn = fab["positions"]
+    assert len(pairs) == ncons == len(rest) and np.allclose(rest, np.linalg.norm(Pn[pairs[:, 0]] - Pn[pairs[:, 1]], axis=1))
+    assert (pairs.max(1) >= first_sim).all()                                                          # every constraint moves a simulated particle
+    deg = np.bincount(pairs.reshape(-1)).max(); assert len(sets) <= deg + 1                           # Misra-Gries: at most max degree + 1 colours
+    for s in sets:                                                                                    # a set is a matching: no particle twice
+        idx = np.concatenate([pairs[s[2 * k]:s[2 * k] + s[2 * k + 1]].reshape(-1) for k in range(4)])
+        assert len(idx) == len(set(idx.tolist()))
+    assert sets[:, 1::2].sum() == ncons and sets[:, 7].sum() == 0 and sets[:, 1].sum() > 0 and sets[:, 3].sum() > 0 and sets[:, 5].sum() > 0
+    anc = np.frombuffer(d["buffers"]["anchor"], "<u4"); a_idx, a_q = anc >> 16, anc & 0xffff
+    assert (a_idx[first_sim:] < first_sim).all() and (a_idx[:first_sim] == np.arange(first_sim)).all() and a_q[-1] > a_q[first_sim] > 0
+    assert np.isclose(np.frombuffer(struct.pack("<I", scale), "<f4")[0] * 65536, 0.8, rtol=1e-4)    # the farthest particle is 4 edges below the top row
+    inv = np.frombuffer(d["buffers"]["invmass"], "<f4"); assert np.all(inv > 0) and np.isfinite(inv).all()
+    assert cloth.pack_fabric(fab, "div_div_notail") != b and len(cloth.pack_fabric(fab, "div_div_notail")) == len(b)
+    # the render mesh: the same flag 1 cm in front, mapped on the flag as proxy
+    V = np.zeros(n, sdk_mesh.VERT); V["pi"] = np.arange(n); V["n2"] = (0, 1, 0, 0); V["n"] = (0, 1, 0, 0); V["c0"] = c0
+    sim = dict(P=P, V=V, F=F, W=np.zeros(0, sdk_mesh.WEIGHT)); render = dict(P=P + np.float32([0, 0.01, 0, 0]), V=V, F=F, W=sim["W"])
+    m = cloth.map_cloth(render, sim, b); mb = cloth.pack_map(m); back = cloth.parse_map(mb)
+    assert cloth.pack_map(back) == mb and not cloth.map_problems(back, n, n)
+    assert np.allclose(back["weight"][:, 3], 0.01, atol=1e-5) and np.allclose(back["weight"][:, :3].sum(1), 1, atol=1e-5)
+    corner = np.frombuffer(d["buffers"]["corner"], "<u4")                                              # every vertex is bound to a triangle that has it as a corner
+    assert all(corner[v] in back["index"][v][np.isclose(back["weight"][v, :3], 1, atol=1e-4)] for v in range(n))
+
+
+@test
 def particle_effects_blank_copy_change_and_package():
     import particles, tpac
     for v in (0, 1, 2, 3, 4, 5, 7, 8, 9):
