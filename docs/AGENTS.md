@@ -86,6 +86,8 @@ bl scene preview my_map my_map.png                # top view: relief, layers, ro
 bl scene check my_map                             # do the files rebuild identically
 bl asset collision crate_body --hull crate.obj    # a collision body: capsules, spheres, cooked hulls and meshes
 bl prefab add crate --mesh crate --physics crate_body     # a prefab of the project: scenes and `bl live spawn` place it
+python sdk/particles.py copy psys_campfire my_fire --color 0.1,1,0.1 --out <stage>/work/Assets
+bl prefab add my_fire_prefab --particle my_fire            # a particle effect on a prefab
 ```
 
 A scene is named by a folder path or by an id. Ids are looked up in the stage, the project, the module and then the

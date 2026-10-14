@@ -163,7 +163,7 @@ def register_scene(project, mod, scene_id, name=None, terrain="Plain", remove=Fa
     return re.findall(r'<Scene\s+id="([^"]+)"', text)
 
 
-def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=False, skeleton=None):
+def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=False, skeleton=None, particle_guid=None):
     """Adds a prefab to (or removes it from) the project's Prefabs/<id>_prefabs.xml, the form the shipped modules use:
     a game_entity with an optional collision body and model. The game reads every Prefabs/*.xml of a module at startup.
     Returns the prefab names in the file afterwards."""
@@ -176,7 +176,12 @@ def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=F
         if physics: rows.append('\t\t<physics shape="%s"/>' % physics)
         if mesh and skeleton:                                  # a skinned model hangs under the skeleton, as in the shipped banner prefabs
             rows += ['\t\t<skeleton skeleton_model="%s">' % skeleton, '\t\t\t<components>', '\t\t\t\t<meta_mesh_component name="%s"/>' % mesh, '\t\t\t</components>', '\t\t</skeleton>']
-        elif mesh: rows += ['\t\t<components>', '\t\t\t<meta_mesh_component name="%s"/>' % mesh, '\t\t</components>']
+        elif mesh or particle_guid:
+            rows.append('\t\t<components>')
+            if mesh: rows.append('\t\t\t<meta_mesh_component name="%s"/>' % mesh)
+            if particle_guid:                                    # a particle effect is referred to by its guid, written as .NET prints it
+                rows += ['\t\t\t<particle_system_instanced_component>', '\t\t\t\t<effect_ref base_effect="{%s}"/>' % particle_guid, '\t\t\t</particle_system_instanced_component>']
+            rows.append('\t\t</components>')
         rows.append('\t</game_entity>')
         i = text.rindex("</prefabs>"); text = text[:i] + "\n".join(rows) + "\n" + text[i:]
     os.makedirs(os.path.dirname(p), exist_ok=True)

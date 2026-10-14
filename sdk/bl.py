@@ -668,13 +668,25 @@ def scene_from_heightmap(a):
 
 @command("prefab.add", "Defines a prefab in the project (Prefabs/<id>_prefabs.xml): a model, a collision body, or both. Scenes and `bl live spawn` can then place it.",
          [P("name", help="the prefab's name", required=True), P("mesh", help="a model (metamesh) name"), P("physics", help="a collision shape name"),
-          P("scale", help="x y z"), P("skeleton", help="a skeleton name: the model is then skinned to it and the prefab can play clips"), P("remove", "bool")], writes=True)
+          P("scale", help="x y z"), P("skeleton", help="a skeleton name: the model is then skinned to it and the prefab can play clips"),
+          P("particle", help="a particle effect by name, staged (python sdk/particles.py copy) or shipped"), P("remove", "bool")], writes=True)
 def prefab_add(a):
     import scaffold
     d, pj = _need_project()
-    if not a.get("remove") and not a.get("mesh") and not a.get("physics"): raise BlError("give --mesh, --physics or both")
+    if not a.get("remove") and not a.get("mesh") and not a.get("physics") and not a.get("particle"): raise BlError("give --mesh, --physics, --particle or a mix")
+    guid = None
+    if a.get("particle"):
+        import glob, uuid, particles
+        c = _cfg(); stage = os.path.join(c.SDK_STAGE_DIR, "work", "Assets")
+        for p_ in sorted(glob.glob(os.path.join(stage, "*.tpac"))) + [os.path.join(c.MODULES, "Native", "AssetPackages", "particles.tpac")]:
+            if not os.path.isfile(p_): continue
+            for res in particles.resources(p_, (particles.PARTICLE_TYPE,)):
+                if res["name"] == a["particle"]: guid = str(uuid.UUID(bytes_le=bytes(res["guid"]))).upper(); break
+            if guid: break
+        if guid is None: raise BlError("no particle effect named %s in the stage or the game" % a["particle"])
     if a.get("dry"): return {"would_edit": os.path.join(d, "Prefabs", pj["module"].lower() + "_prefabs.xml")}
-    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove")), a.get("skeleton")),
+    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove")), a.get("skeleton"), guid),
+            "particle_guid": guid,
             "note": "`bl deploy` copies it; the game reads it at startup"}
 
 
