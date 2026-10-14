@@ -231,7 +231,7 @@ def compat(a):
         selftest.section_caches(60 if quick else 300)
         selftest.section_skeletons()
         if not quick: selftest.section_synthetic()
-        for extra in ("section_physics",):                       # sections added by later versions of the self-test
+        for extra in ("section_codecs", "section_physics"):      # sections only some versions of the self-test have
             if hasattr(selftest, extra): getattr(selftest, extra)()
     finally:
         selftest.report = orig
