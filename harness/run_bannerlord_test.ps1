@@ -13,7 +13,7 @@
 # Answers three message boxes of the game by button text (safe mode: No, shader cache notice: OK, crash file collection: No).
 # Sends no other input to the game. Exit codes: 0 ran to the end or timeout handling done, 3 the game was already running.
 param([Parameter(Mandatory = $true)][string]$Module, [string]$Tag = "run1", [int]$TimeoutSec = 420, [int]$Every = 4,
-      [switch]$Campaign, [switch]$Story, [switch]$SoundEngine, [string]$ModulesBefore = "", [string]$ExtraArgs = "",
+      [switch]$Campaign, [switch]$Story, [switch]$SoundEngine, [string]$ModulesBefore = "", [string]$ModuleOrder = "", [string]$ExtraArgs = "",
       [string]$LogFile = "", [string]$EndMarker = "AUTOTEST_DONE", [string]$OutDir = "")
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $game = if ($env:BANNERLORD_DIR) { $env:BANNERLORD_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Mount & Blade II Bannerlord" }
@@ -25,6 +25,7 @@ if (Get-Process Bannerlord*, TaleWorlds.MountAndBlade* -ErrorAction SilentlyCont
 $bin = Join-Path $game "bin\Win64_Shipping_Client"
 $mods = "Native*SandBoxCore*" + $(if ($Story) { "Sandbox*StoryMode*" } elseif ($Campaign) { "Sandbox*" } else { "" }) + "CustomBattle*$Module"
 if ($ModulesBefore) { $mods = "$ModulesBefore*$mods" }
+if ($ModuleOrder) { $mods = $ModuleOrder }   # the whole list, in load order, "*"-separated (it must name the module under test)
 $gargs = "/singleplayer _MODULES_*$mods*_MODULES_"
 if ($ExtraArgs) { $gargs = "$gargs $ExtraArgs" }
 $saves = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Mount and Blade II Bannerlord\Game Saves"

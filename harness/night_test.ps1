@@ -14,7 +14,7 @@
 param([Parameter(Mandatory = $true)][string]$Module, [Parameter(Mandatory = $true)][string]$Words,
       [string]$Suite = "test", [string]$Tag = "", [int]$TimeoutSec = 420, [switch]$Campaign, [switch]$Story, [switch]$NoRetry,
       [string]$Record = "", [switch]$DryRun, [string]$LogFile = "", [string]$EndMarker = "AUTOTEST_DONE",
-      [string]$AutostartFile = "", [string]$OutDir = "", [string]$ModulesBefore = "")
+      [string]$AutostartFile = "", [string]$OutDir = "", [string]$ModulesBefore = "", [string]$ModuleOrder = "")
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $game = if ($env:BANNERLORD_DIR) { $env:BANNERLORD_DIR } else { "C:\Program Files (x86)\Steam\steamapps\common\Mount & Blade II Bannerlord" }
 $sdkHome = if ($env:BANNERLORD_SDK_HOME) { $env:BANNERLORD_SDK_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "bannerlord-sdk" } else { Join-Path $HOME ".bannerlord-sdk" }   # same root as sdk/config.py
@@ -30,7 +30,7 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 $runScript = Join-Path $here "run_bannerlord_test.ps1"
 if ($DryRun) {
     $AutostartFile = Join-Path $nd "autostart_dry.txt"; $Record = ""; $runScript = Join-Path $nd "stub_run.ps1"
-    [IO.File]::WriteAllText($runScript, "param([string]`$Module, [string]`$Tag, [int]`$TimeoutSec, [switch]`$Campaign, [switch]`$Story, [string]`$LogFile, [string]`$EndMarker, [string]`$OutDir, [string]`$ModulesBefore)`r`n""stub run `$Tag campaign=`$Campaign""`r`n""saves untouched: True""`r`nexit 0`r`n", $utf8)
+    [IO.File]::WriteAllText($runScript, "param([string]`$Module, [string]`$Tag, [int]`$TimeoutSec, [switch]`$Campaign, [switch]`$Story, [string]`$LogFile, [string]`$EndMarker, [string]`$OutDir, [string]`$ModulesBefore, [string]`$ModuleOrder)`r`n""stub run `$Tag campaign=`$Campaign""`r`n""saves untouched: True""`r`nexit 0`r`n", $utf8)
 }
 $hadAuto = Test-Path $AutostartFile
 $oldAuto = if ($hadAuto) { [IO.File]::ReadAllBytes($AutostartFile) } else { $null }
@@ -51,6 +51,7 @@ function Run-Attempt([int]$n) {
     if ($Campaign) { $runArgs += " -Campaign" }
     if ($Story) { $runArgs += " -Story" }
     if ($ModulesBefore) { $runArgs += " -ModulesBefore $ModulesBefore" }
+    if ($ModuleOrder) { $runArgs += " -ModuleOrder $ModuleOrder" }
     $p = Start-Process powershell.exe -ArgumentList $runArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput "$ad\run.txt" -RedirectStandardError "$ad\run_err.txt"
     $null = $p.Handle   # keeps the exit code readable after exit
     $p.WaitForExit()
