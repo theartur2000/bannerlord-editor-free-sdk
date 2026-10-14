@@ -119,8 +119,10 @@ Safety rules built into the command line:
 | File formats | Verified by byte-identical round trips against the game's own files (see [Self-test](#self-test)). |
 | Scene tools | Verified in the unmodified game: generated battle maps, 200 vs 200 battles, custom textures and models. |
 | Asset commands | Pass the self-test. The scripts they were packaged from built a large mod that runs in game; the packaged commands themselves have not yet been run in game. |
-| Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. A scaffolded project compiles against the game; its test driver and bridge have not been run in game yet. |
-| Heightmap import | Verified offline: a shipped scene exported and imported again has identical heights, and its files pass `scene.check`. Not yet loaded in game. |
+| Command line, MCP server, scaffold | Covered by `tests/run_offline.py` (no game needed) and run against an install. Verified in game (2026-10-13, seven sessions): a project made with `bl new` builds, deploys and loads; its test driver runs a Custom Battle unattended and the harness passes; every bridge command answers. |
+| Heightmap import | Verified offline (identical heights after export and import, files pass `scene.check`) and in game: a heightmap scene with ground cover loads and holds 200 against 200. |
+| Scene slots | Verified in game: a slot filled while the game ran was then loaded for a battle, and slots used in one session were emptied at the next start. |
+| Collision bodies | Capsule and sphere bodies made by the SDK verified in game: a ray cast hits the top of the body at the expected height (to the millimetre), with and without a visible mesh. Cooked hull and triangle-mesh bodies load without errors, but the in-game check could not confirm them: the engine's ray casts also miss the shipped triangle-mesh bodies of entities placed in a scene file. |
 | Workshop upload file | Written to the format the game's uploader reads. Not verified by an upload. |
 | Other game versions | Untested. `bl compat` reports what still matches. |
 
@@ -344,8 +346,8 @@ Verified for game v1.4.8.119303:
 
 Not verified:
 
-- New collision bodies in game. Shapes of capsules and spheres are written in the game's format but have not been
-  loaded; convex hulls and triangle meshes cannot be written yet, because their cooked PhysX data is not produced.
+- Cooked hull and triangle-mesh bodies colliding in game (see the status table). Their bytes match the game's own cooks.
+- UI sprite sheets made with `bl ui.sprites` loading in game.
 - Encoder quality beyond one mode: BC7 is written in mode 6 and BC6H in mode 11 only.
 
 - Other game versions. Offsets and layouts may change; addresses in the notes should be treated as stale after a

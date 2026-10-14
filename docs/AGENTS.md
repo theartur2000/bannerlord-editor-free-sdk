@@ -113,9 +113,25 @@ bl live look --values bearing=90,elevation=-10
 bl live screenshot --values path=C:\out\shot.bmp
 bl live spawn --values prefab=rock_cliff_b,x=600,y=640,yaw=45
 bl live remove --values id=all
+bl live raycast --values x=600,y=640      # what a vertical ray hits first, and at what height
+bl live quit                              # quits; under `bl run` the run then counts as passed
 ```
 
-The bridge is part of a project made with `bl new` (`src/Bridge.cs`). It compiles; it has not been run in the game yet.
+The bridge is part of a project made with `bl new` (`src/Bridge.cs`). Every command has been run in the game. A
+test session that is driven from outside looks like this:
+
+```powershell
+bl run --words "menu=30 scene=slot_1 tod=12 secs=900" --launch      # in the background: waits 30 s at the menu
+bl live ping                              # repeat until it answers
+bl slots fill slot_1 my_map               # while the game waits at the menu
+bl live state                             # repeat until "scene": "slot_1" with a player
+bl live screenshot --values path=...      # look, change, look again
+bl live quit
+```
+
+Ray casts see capsule and sphere bodies (the module's own included) and prefabs spawned while the game runs (with
+`fixed=1`). They do not see the triangle-mesh bodies of entities loaded with the scene, shipped ones included, so a
+ray cast cannot confirm such a body.
 
 ## Scenes without a restart
 
