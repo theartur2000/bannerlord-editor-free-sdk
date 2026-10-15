@@ -27,6 +27,7 @@
 //   settlement id=                         a settlement of the running campaign: name, position, culture, owner
 //   mapheight x= y=                        the campaign map's height at a position (map units)
 //   mapmove x= y=                          put the player's party at a campaign map position (the map camera follows it)
+//   time [mode=stop|play|fast]             the campaign clock: answers the date and the parties on the map; mode= starts or stops it
 //   navcache [path=]                       in a campaign, build the settlement distance cache of this map with the game's own path
 //                                          finding and write it (default <module>/ModuleData/DistanceCaches/settlements_distance_cache_Default.bin)
 //   indoor settlement= location= [scene=]  in a campaign, open a settlement's interior (lordshall, tavern, arena, center ...)
@@ -257,6 +258,22 @@ namespace __MOD__
                     var to = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true);
                     TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position = to;
                     Vec2 now = TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position.ToVec2(); r["party"] = new[] { now.x, now.y };
+                    return r;
+                }
+                case "time":
+                {
+                    var camp = TaleWorlds.CampaignSystem.Campaign.Current;
+                    if (camp == null) throw new Exception("no campaign is running");
+                    if (a.ContainsKey("mode"))
+                        camp.TimeControlMode = a["mode"] == "stop" ? TaleWorlds.CampaignSystem.CampaignTimeControlMode.Stop
+                            : a["mode"] == "fast" ? TaleWorlds.CampaignSystem.CampaignTimeControlMode.UnstoppableFastForward
+                            : TaleWorlds.CampaignSystem.CampaignTimeControlMode.UnstoppablePlay;   // the stoppable modes halt while the player's party stands still
+                    r["mode"] = camp.TimeControlMode.ToString();
+                    r["date"] = TaleWorlds.CampaignSystem.CampaignTime.Now.ToString();
+                    r["days"] = TaleWorlds.CampaignSystem.CampaignTime.Now.ToDays;
+                    int moving = 0, all = 0;
+                    foreach (var mp in TaleWorlds.CampaignSystem.Party.MobileParty.All) { all++; if (mp.IsMoving) moving++; }
+                    r["parties"] = all; r["moving"] = moving;
                     return r;
                 }
                 case "navcache":

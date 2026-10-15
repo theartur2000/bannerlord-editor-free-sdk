@@ -519,12 +519,23 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
     info, T, z0 = _read(src); cell = info["node_size"] / 256.0
     z = continent_heights(image, high, low, sea)
     set_heights(dst, z)
-    import terrain                                   # the old map's texture layers would still draw where its rivers and rocks were
+    types, land = continent_types(z, cell, k, high, forest, seed)
+    # the old map's texture layers would still draw where its rivers and rocks were: the layer maps are cleared and the
+    # per-sample layer (physics material) map follows the new terrain types (layers of the shipped map: default,
+    # flora_forest, rock, grass, dirt, dirt2, forest2, river)
+    import terrain
     Tc = terrain.Terrain(os.path.join(dst, "terrain.bin")); data = Tc.load()
     data["index_maps"] = [np.zeros_like(np.asarray(m)) for m in data["index_maps"]]
+    layer_of = np.zeros(32, np.uint8); layer_of[LAND_TYPES["Plain"]] = 3; layer_of[LAND_TYPES["Forest"]] = 1
+    layer_of[LAND_TYPES["Mountain"]] = 2; layer_of[LAND_TYPES["Snow"]] = 2
+    nc = types.shape[0]; jj = np.minimum(np.arange(z.shape[0]) // k, nc - 1)
+    full = layer_of[types[np.ix_(jj, jj)]]                 # per height sample (4097 x 4097)
+    nx_ = info["nx"]
+    for idx in range(len(data["physics"])):
+        iy, ix = divmod(idx, nx_); blk = full[iy * 256:iy * 256 + 257, ix * 256:ix * 256 + 257]
+        ph = np.asarray(data["physics"][idx]).copy(); ph[:] = blk[None]; data["physics"][idx] = ph
     blob = terrain.build(data)
     with open(os.path.join(dst, "terrain.bin"), "wb") as f: f.write(blob)
-    types, land = continent_types(z, cell, k, high, forest, seed)
     flags = {int(t): 0xFFFFFF93 for t in LAND_TYPES.values()}
     nm = navmesh.NavMesh.from_height_field(z + 0.47, cell, land, k, regions=types, region_flags=flags)
     nm.save(os.path.join(dst, "navmesh.bin"))

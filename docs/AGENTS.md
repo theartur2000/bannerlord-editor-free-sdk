@@ -124,6 +124,7 @@ project (`SceneObj/Main_map`, flora moved, `bl deploy` installs it) and later bu
 bl worldmap.move --id town_S1 --x 375 --y 530     # position, gate and the town's model; check the spot with bl worldmap.at
 bl worldmap.terrain --x 395 --y 520 --radius 6 --type Desert   # the party navmesh's terrain type: speed and passability
 bl worldmap.look --mode painted                   # draw the map from one colour texture (terrain types + relief), or --image my.png
+bl worldmap.continent --image heights.png --sea 0.3   # a new continent: heights, navmesh, forests, settlements on land
 ```
 
 A move is a data patch (posX, posY, gate) plus the settlement's model moved in the map scene copy. The party navmesh is
@@ -137,6 +138,20 @@ The map scene copy carries `TileSets/WorldMap.gts` (4 MB): the engine opens the 
 and one colour texture, `<module>_worldmap_colour`, painted from the terrain types and the relief or taken from your
 image (row 0 = the far edge, the largest y). Edited land then gets its own colours, which is what a new continent needs;
 the shipped map's fine detail is gone. `--mode shipped` goes back.
+
+`worldmap.continent` replaces the land itself. From a grey heightmap (row 0 = the far edge) it writes the base every
+later edit starts from (`worldmap/continent` in the project): heights, a party navmesh with terrain types (Plain,
+Forest from noise, Mountain and Snow from slope and height), trees in the forests, the old map's rocks, cliffs, bridges,
+lakes and decals taken out, and every settlement moved onto land with its gate on the navmesh (a gate off it crashes the
+engine's path finding). The AI also needs the settlement distance cache of the new map, built by the game itself:
+
+```powershell
+bl install; bl deploy; bl live.enable
+bl run --campaign --words "campaign near=town_S1" --launch --timeout 3600   # in the background
+bl live navcache --timeout 3000          # about 15 minutes: writes <module>/ModuleData/DistanceCaches/...
+# copy that file into the project's ModuleData/DistanceCaches, so `bl deploy` keeps it
+bl live time --values mode=fast          # the campaign clock; `bl live time` reports the date and the moving parties
+```
 
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:
