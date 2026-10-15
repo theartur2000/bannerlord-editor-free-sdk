@@ -27,6 +27,8 @@
 //   settlement id=                         a settlement of the running campaign: name, position, culture, owner
 //   mapheight x= y=                        the campaign map's height at a position (map units)
 //   mapmove x= y=                          put the player's party at a campaign map position (the map camera follows it)
+//   navcache [path=]                       in a campaign, build the settlement distance cache of this map with the game's own path
+//                                          finding and write it (default <module>/ModuleData/DistanceCaches/settlements_distance_cache_Default.bin)
 //   indoor settlement= location= [scene=]  in a campaign, open a settlement's interior (lordshall, tavern, arena, center ...)
 //                                          as the game does; scene= loads another scene there (an edited copy). The first
 //                                          call enters the settlement and answers entering=; call again to open the location
@@ -248,6 +250,18 @@ namespace __MOD__
                     var to = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true);
                     TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position = to;
                     Vec2 now = TaleWorlds.CampaignSystem.Party.MobileParty.MainParty.Position.ToVec2(); r["party"] = new[] { now.x, now.y };
+                    return r;
+                }
+                case "navcache":
+                {
+                    if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
+                    var t0 = DateTime.Now;
+                    var cache = new TaleWorlds.CampaignSystem.Map.DistanceCache.SandBoxNavigationCache(TaleWorlds.CampaignSystem.Party.MobileParty.NavigationType.Default);
+                    cache.GenerateCacheData();
+                    string path = a.ContainsKey("path") ? a["path"] : Path.Combine(SubModule.ModulePath, "ModuleData", "DistanceCaches", "settlements_distance_cache_Default.bin");
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    cache.Serialize(path);
+                    r["path"] = path; r["bytes"] = new FileInfo(path).Length; r["seconds"] = (DateTime.Now - t0).TotalSeconds;
                     return r;
                 }
                 case "indoor":

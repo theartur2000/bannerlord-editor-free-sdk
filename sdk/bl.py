@@ -832,6 +832,31 @@ def worldmap_look(a):
     return res
 
 
+@command("worldmap.continent", "Replaces the campaign map's land with a new continent from a heightmap image: heights, a party navmesh with terrain types, trees in the forests, and every settlement set on land. Later bumps, moves and terrain edits apply on top; the map is drawn painted.",
+         [P("image", help="grey heightmap (PNG or .npy), row 0 = the map's far edge (largest y); white = high", required=True),
+          P("high", "number", help="height of white in map units (the shipped map's highest point is 23)", default=23.0),
+          P("sea", "number", help="share of the grey range under water, 0..1", default=0.3), P("forest", "number", help="share of the land under forest", default=0.35),
+          P("seed", "int", default=1)], writes=True)
+def worldmap_continent(a):
+    import json, datapatch, worldedit
+    d, pj = _need_project(); c = _cfg(); c.require_game()
+    if not os.path.isfile(a["image"]): raise BlError("no file " + a["image"])
+    if a.get("dry"): return {"would_write": os.path.join(d, "worldmap", "continent")}
+    res, changes = worldedit.continent(d, a["image"], float(a.get("high") or 23.0), sea=float(a.get("sea") or 0.3), forest=float(a.get("forest") or 0.35), seed=int(a.get("seed") or 1))
+    for sid, (dx, dy) in changes.items():
+        px, py, gx, gy = worldedit.settlement_data(sid)
+        attrs = {"posX": "%.3f" % (px + dx), "posY": "%.3f" % (py + dy)}
+        if gx is not None: attrs.update(gate_posX="%.3f" % (gx + dx), gate_posY="%.3f" % (gy + dy))
+        datapatch.set_attrs(d, pj["module"], "Settlements", "Settlement", sid, attrs)
+    folder = os.path.join(d, "worldmap"); store = os.path.join(folder, "edits.json")
+    edits = json.load(open(store)) if os.path.isfile(store) else []
+    res["map_scene"] = worldedit.write_map_scene(edits, d, stage=os.path.join(c.SDK_STAGE_DIR, "work"), module=pj["module"])
+    res["settlement_patches"] = len(changes)
+    res["note"] = ("`bl install` (the colour map), `bl deploy` (map scene and patches), then build the settlement distance cache in a campaign: "
+                   "`bl live navcache` and deploy again (AI travel uses it)")
+    return res
+
+
 @command("data.set", "Changes attributes of an object the game (or another module) defines: a settlement, an item, a troop, a kingdom ... as an XSLT patch in the project.",
          [P("kind", help="the data kind (the root element): Settlements, Items, NPCCharacters, Kingdoms, Clans, Cultures ...", required=True),
           P("element", help="the object's element: Settlement, Item, NPCCharacter, Kingdom ...", required=True), P("id", help="the object's id", required=True),
@@ -1015,7 +1040,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, indoor, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, navcache, indoor, sprite, say, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):

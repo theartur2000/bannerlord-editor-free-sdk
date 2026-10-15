@@ -34,12 +34,19 @@ mountain across a road needs the navmesh (navmesh.bin, faces with terrain types)
     bump(scene_dir, x, y, radius, height)          a smooth rise (or dip, height < 0) in map units around x, y
     set_heights(scene_dir, z)                      replace the whole height field (array of map units, row = y)
 """
-import os, shutil, subprocess, sys
+import os, re, shutil, subprocess, sys
 
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+
+
+_BASE = None          # the map the edits apply to: a generated continent (worldmap/continent of a project) or, when None, SandBox's
+
+
+def base_dir():
+    return _BASE or source_dir()
 
 
 def source_dir():
@@ -206,8 +213,8 @@ def write_height_textures(edits, out_dir, rdc_dir, png_dir=None, dry=False):
 
 
 def height_at(edits, x, y):
-    """The shipped height at x, y and the height after the edits (map units)."""
-    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    """The height at x, y before (shipped, or the continent's) and after the edits (map units)."""
+    info, T, z = _read(base_dir()); cell = info["node_size"] / 256.0
     j, i = int(round(y / cell)), int(round(x / cell))
     before = float(z[j, i]); return before, before + float(edits_field(edits, z.shape, cell)[j, i])
 
@@ -215,9 +222,9 @@ def height_at(edits, x, y):
 def map_flora(edits):
     """The shipped map's flora (flora.py dict) with every tree and plant moved up or down by the edits' change under it."""
     import flora
-    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    info, T, z = _read(base_dir()); cell = info["node_size"] / 256.0
     dz = edits_field(edits, z.shape, cell)
-    d = flora.read(source_dir()); P = flora.positions(d)
+    d = flora.read(base_dir()); P = flora.positions(d)
     j = np.clip(np.rint(P[:, 1] / cell).astype(int), 0, z.shape[0] - 1); i = np.clip(np.rint(P[:, 0] / cell).astype(int), 0, z.shape[1] - 1)
     shift = dz[j, i]; d["rec"]["m"][:, 3, 2] += shift.astype(np.float32)
     return d, int((np.abs(shift) > 1e-3).sum())
@@ -254,12 +261,15 @@ def write_map_scene(edits, project, tileset="pointer", dry=False, look=None, sta
     from terrain.bin (the edits' heights) with one colour texture (painted from the terrain types and the relief, or the
     image), staged into `stage` as <module>_worldmap_colour: the shipped renderer and its tile set are then not used."""
     import json
+    global _BASE
+    cont = os.path.join(project, "worldmap", "continent")
+    _BASE = cont if os.path.isfile(os.path.join(cont, "scene.xscene")) else None
     if look is None:
         lp = os.path.join(project, "worldmap", "look.json")
         look = json.load(open(lp)) if os.path.isfile(lp) else {"mode": "shipped"}
-    painted = look.get("mode") == "painted"
+    painted = look.get("mode") == "painted" or _BASE is not None     # a generated continent has no shipped look
     import flora
-    src = source_dir(); dst = os.path.join(project, "SceneObj", "Main_map")
+    src = base_dir(); dst = os.path.join(project, "SceneObj", "Main_map")
     d, moved = map_flora(edits)
     if dry: return {"map_scene": dst, "trees_moved": moved}
     os.makedirs(dst, exist_ok=True)
@@ -354,7 +364,7 @@ def write_map_navmesh(edits, src, dst):
     terrain type (face group) of the faces whose centre is inside a "terrain" edit's circle set to its type. Returns counts."""
     import navmesh
     n = navmesh.NavMesh(src)
-    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    info, T, z = _read(base_dir()); cell = info["node_size"] / 256.0
     dz = edits_field(edits, z.shape, cell); v = n.vertices
     j = np.clip(np.rint(v[:, 1] / cell).astype(int), 0, z.shape[0] - 1); i = np.clip(np.rint(v[:, 0] / cell).astype(int), 0, z.shape[1] - 1)
     lift = dz[j, i]; n.vertices = (v + np.c_[np.zeros((len(v), 2)), lift]).astype(np.float32)
@@ -432,3 +442,141 @@ def settlement_data(sid):
     if not m: raise ValueError("no settlement %s in SandBox's settlements.xml" % sid)
     g = lambda k: (lambda r: float(r.group(1)) if r else None)(re.search(r'\s%s="([-0-9.]+)"' % k, m.group(0)))
     return g("posX"), g("posY"), g("gate_posX"), g("gate_posY")
+
+
+# ---- a new continent: the base map an edit list starts from, generated from a heightmap image
+
+DECOR = re.compile(r"^(_occ_quad|_decal|map_decal|decal |map_mountain_rock|mainmap_cliff|map_rock|map_bridge|wooden_brige|stone_bridge|"
+                   r"map_icon_waterfall|water_plane|lake_|log_|editor_cube)")
+SHORE = 1.6          # map units: land starts here, above the sea planes (0.4 to 1.3) of the shipped map scene
+LAND_TYPES = {"Plain": 1, "Snow": 3, "Forest": 4, "Mountain": 7}
+TREES = ("map_pine_c", "worldmap_tree_beech_01", "map_pine_a", "map_pine_b")
+
+
+def _resample(a, n):
+    """Bilinear resample of a 2-d array to (n, n)."""
+    a = np.asarray(a, np.float64); h, w = a.shape
+    y = np.linspace(0, h - 1, n); x = np.linspace(0, w - 1, n)
+    y0 = np.floor(y).astype(int); x0 = np.floor(x).astype(int); y1 = np.minimum(y0 + 1, h - 1); x1 = np.minimum(x0 + 1, w - 1)
+    ty = (y - y0)[:, None]; tx = (x - x0)[None, :]
+    return (a[np.ix_(y0, x0)] * (1 - ty) * (1 - tx) + a[np.ix_(y0, x1)] * (1 - ty) * tx + a[np.ix_(y1, x0)] * ty * (1 - tx) + a[np.ix_(y1, x1)] * ty * tx)
+
+
+def _blur(a, r):
+    """Box blur of radius r cells, twice (close to a gaussian)."""
+    if r < 1: return a
+    for _ in range(2):
+        for ax in (0, 1):
+            c = np.cumsum(np.pad(a, [(r + 1, r) if k == ax else (0, 0) for k in (0, 1)], mode="edge"), axis=ax)
+            a = (np.take(c, range(2 * r + 1, c.shape[ax]), axis=ax) - np.take(c, range(0, c.shape[ax] - 2 * r - 1), axis=ax)) / (2 * r + 1)
+    return a
+
+
+def continent_heights(image, high=23.0, low=-0.723, sea=0.3, smooth=2):
+    """The map's height grid (4097 x 4097, row = y) from a grey image (PNG or .npy; row 0 = the far edge, the largest y):
+    grey below `sea` (0..1) is sea floor from `low` up to 0.2, above it land from SHORE up to `high`, with a short ramp."""
+    import pngio
+    if str(image).lower().endswith(".npy"): v = np.load(image).astype(np.float64)
+    else: im = pngio.read_png(image); v = im["rgba"][..., 0].astype(np.float64)
+    v = (v - v.min()) / max(v.max() - v.min(), 1e-9)
+    v = _blur(_resample(v[::-1], 4097), smooth)
+    band = 0.015
+    t = np.clip((v - (sea - band)) / (2 * band), 0, 1); t = t * t * (3 - 2 * t)
+    seab = low + np.clip(v / max(sea, 1e-6), 0, 1) * (0.2 - low); land = SHORE + np.clip((v - sea) / max(1 - sea, 1e-6), 0, 1) * (high - SHORE)
+    return seab * (1 - t) + land * t
+
+
+def continent_types(z, cell, k, high, forest=0.35, seed=1):
+    """Terrain type per navmesh cell (k x k height samples): 0 for sea (no navmesh there), else Plain, Forest (smooth noise,
+    `forest` of the land), Mountain (steep or high) or Snow (highest)."""
+    n = (z.shape[0] - 1) // k; zz = z[:n * k, :n * k].reshape(n, k, n, k)
+    lo, hi, mean = zz.min(axis=(1, 3)), zz.max(axis=(1, 3)), zz.mean(axis=(1, 3))
+    land = lo >= SHORE - 0.1
+    slope = (hi - lo) / (k * cell); hn = (mean - SHORE) / max(high - SHORE, 1e-6)
+    noise = _blur(np.random.default_rng(seed).random((n, n)), max(2, n // 60))
+    cut = np.quantile(noise[land], 1 - forest) if land.any() and forest > 0 else np.inf
+    t = np.where(land, LAND_TYPES["Plain"], 0)
+    t = np.where(land & (noise >= cut), LAND_TYPES["Forest"], t)
+    t = np.where(land & ((slope > 0.35) | (hn > 0.6)), LAND_TYPES["Mountain"], t)
+    t = np.where(land & (hn > 0.85), LAND_TYPES["Snow"], t)
+    return t.astype(np.int64), land
+
+
+def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=1, trees_per_cell=2.0, k=10):
+    """Writes <project>/worldmap/continent: the map scene folder every later edit starts from (heights from the image, a
+    party navmesh with terrain types, trees in the forests, the old map's rocks, cliffs, bridges and lakes taken out, every
+    settlement model set on land). Returns a summary and the settlement data changes (posX, posY, gate) to patch."""
+    import flora, navmesh, scene
+    global _BASE
+    _BASE = None
+    src = source_dir(); dst = os.path.join(project, "worldmap", "continent"); os.makedirs(dst, exist_ok=True)
+    for f in os.listdir(src):
+        if f in ("TileSets",): continue
+        a, b = os.path.join(src, f), os.path.join(dst, f)
+        if os.path.isdir(a):
+            if not os.path.isdir(b): shutil.copytree(a, b)
+        else: shutil.copyfile(a, b)
+    info, T, z0 = _read(src); cell = info["node_size"] / 256.0
+    z = continent_heights(image, high, low, sea)
+    set_heights(dst, z)
+    types, land = continent_types(z, cell, k, high, forest, seed)
+    flags = {int(t): 0xFFFFFF93 for t in LAND_TYPES.values()}
+    nm = navmesh.NavMesh.from_height_field(z + 0.47, cell, land, k, regions=types, region_flags=flags)
+    nm.save(os.path.join(dst, "navmesh.bin"))
+    # the scene: the old geography's decoration out (at any depth, but not inside a settlement's model), settlement models onto land
+    import re as re_
+    ids = re_.findall(r'<Settlement\s[^>]*?id="([^"]+)"', open(os.path.join(config_modules(), "SandBox", "ModuleData", "settlements.xml"), encoding="utf-8").read(), re_.S)
+    doc = scene.load(os.path.join(dst, "scene.xscene")); idset = set(ids)
+    def prune(el):
+        n_ = 0
+        for c in list(el.elements("game_entity")):
+            nm_ = c.get("name") or ""; pf = c.get("old_prefab_name") or ""
+            if nm_ in idset: continue
+            if DECOR.match(nm_) or DECOR.match(pf): el.remove(c); n_ += 1; continue
+            ch = c.find("children")
+            if ch is not None: n_ += prune(ch)
+        return n_
+    removed = prune(doc.entities_element())
+    n = types.shape[0]; lj, li = np.nonzero(land & (types != LAND_TYPES["Snow"]))
+    lx, ly = (li + 0.5) * step, (lj + 0.5) * step
+    occupied = np.zeros(len(lx), bool); changes = {}; moved = 0; spots = []
+    for sid in ids:
+        try: ent, pos = settlement_entity(doc, sid)
+        except ValueError: continue
+        j, i = int(pos[1] // step), int(pos[0] // step)
+        ok = 0 <= j < n and 0 <= i < n and land[j, i] and types[j, i] != LAND_TYPES["Snow"]
+        if ok: nx_, ny_ = pos[0], pos[1]
+        else:
+            d2 = (lx - pos[0]) ** 2 + (ly - pos[1]) ** 2 + occupied * 1e9; q = int(np.argmin(d2)); occupied[q] = True
+            nx_, ny_ = lx[q], ly[q]; moved += 1
+        lift = pos[2] - float(z0[int(round(pos[1] / cell)), int(round(pos[0] / cell))])
+        nz = float(z[int(round(ny_ / cell)), int(round(nx_ / cell))]) + max(lift, 0.0)
+        ent.position = tuple(np.asarray(ent.position, np.float64) + np.array([nx_, ny_, nz]) - pos)
+        if not ok: changes[sid] = (nx_ - pos[0], ny_ - pos[1])
+        spots.append((nx_, ny_))
+    doc.save()
+    # trees: scattered in the forest cells (and a few on the mountains), sized as the shipped map's of the same kind, none on a settlement
+    shipped = flora.read(src); sm = np.linalg.norm(shipped["rec"]["m"][:, 2, :3], axis=1); sn = np.array(shipped["names"])
+    size = {t: (np.percentile(sm[sn == t], 5), np.percentile(sm[sn == t], 95)) if (sn == t).any() else (0.6, 0.8) for t in TREES}
+    rng = np.random.default_rng(seed + 1); names, recs = [], []; sp = np.array(spots) if spots else np.zeros((0, 2))
+    for t, per, kinds in ((LAND_TYPES["Forest"], trees_per_cell, TREES), (LAND_TYPES["Mountain"], trees_per_cell * 0.15, TREES[3:])):
+        jj, ii = np.nonzero(types == t); m = rng.poisson(per, len(jj))
+        jj, ii = np.repeat(jj, m), np.repeat(ii, m)
+        x = (ii + rng.random(len(ii))) * step; y = (jj + rng.random(len(jj))) * step
+        if len(sp):
+            near = np.zeros(len(x), bool)
+            for a_, b_ in sp: near |= (x - a_) ** 2 + (y - b_) ** 2 < 3.0 ** 2
+            x, y = x[~near], y[~near]
+        gz = z[np.clip(np.rint(y / cell).astype(int), 0, z.shape[0] - 1), np.clip(np.rint(x / cell).astype(int), 0, z.shape[1] - 1)]
+        for q in range(len(x)):
+            kind = kinds[rng.integers(len(kinds))]
+            nm_, r = flora.instance(kind, x[q], y[q], gz[q], rng.uniform(0, 360), rng.uniform(*size[kind]))
+            names.append(nm_); recs.append(r)
+    flora.write(dst, dict(names=names, rec=np.array(recs, flora.REC) if recs else np.zeros(0, flora.REC)))
+    return {"continent": dst, "land_share": round(float(land.mean()), 3), "navmesh_faces": len(nm.faces), "trees": len(names),
+            "decoration_removed": removed, "settlements_moved_onto_land": moved, "height_range": [round(float(z.min()), 3), round(float(z.max()), 3)]}, changes
+
+
+def config_modules():
+    import config
+    return config.MODULES
