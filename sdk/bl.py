@@ -844,6 +844,10 @@ def worldmap_continent(a):
     if not os.path.isfile(a["image"]): raise BlError("no file " + a["image"])
     if a.get("dry"): return {"would_write": os.path.join(d, "worldmap", "continent")}
     res, changes = worldedit.continent(d, a["image"], float(a.get("high") or 23.0), sea=float(a.get("sea") or 0.3), forest=float(a.get("forest") or 0.35), seed=int(a.get("seed") or 1))
+    record = os.path.join(d, "worldmap", "continent_patches.json")       # the settlements an earlier continent moved: their patches go first
+    for sid in (json.load(open(record)) if os.path.isfile(record) else []):
+        datapatch.set_attrs(d, pj["module"], "Settlements", "Settlement", sid, {"posX": None, "posY": None, "gate_posX": None, "gate_posY": None})
+    json.dump(sorted(changes), open(record, "w"), indent=1)
     for sid, (dx, dy) in changes.items():
         px, py, gx, gy = worldedit.settlement_data(sid)
         attrs = {"posX": "%.3f" % (px + dx), "posY": "%.3f" % (py + dy)}

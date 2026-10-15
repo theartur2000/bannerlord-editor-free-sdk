@@ -249,7 +249,7 @@ and `install` copies a stage into the module.
 python sdk/install.py texture rock_d.png                       # BC1/BC3 by alpha; _n becomes BC5, _s BC1, _h BC4
 python sdk/install.py material rock --diffuse rock_d --normal rock_n --skinned
 python sdk/install.py skeleton creature.gltf --name creature_skeleton     # max 64 bones, minimal ragdoll; FBX works too
-python sdk/install.py mesh creature.fbx --material rock        # skinned bones are named bip01_<name>_<index>
+python sdk/install.py mesh creature.fbx --material rock        # skinned: any bone names (Blender, Mixamo, bip01_<name>_<index>)
 python sdk/install.py anim creature_walk.fbx                   # single-take FBX -> skeleton animation
 python sdk/install.py owner "<SDK home>\stage\work\Assets\creature_walk_geo.tpac" --skeleton <skeleton guid>
 python sdk/install.py clip creature_walk_clip creature_walk 31 # clip on that animation, 31 frames at 30 fps
@@ -372,7 +372,7 @@ Not verified:
   game update.
 - Multiplayer and anti-cheat. The SDK is for single player only.
 
-Workflow-specific conventions: skinned FBX bones must be named `bip01_<name>_<index>`; the ragdoll written by
+Workflow-specific conventions: skinned FBX bones keep their own names (the skeleton's parent-first order gives the indices; `bip01_<name>_<index>` names keep theirs); the ragdoll written by
 `skeleton` is a minimal starting point; clip caches are written only for clips with a root position channel.
 
 ## Test harness
