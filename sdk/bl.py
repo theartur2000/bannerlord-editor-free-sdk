@@ -348,22 +348,24 @@ def asset_texture(a):
 
 @command("asset.material", "Stages a material that uses staged or installed textures.",
          [P("name", required=True), P("diffuse", required=True), P("normal"), P("specular"), P("shader", default="pbr_shading"), P("blend"),
-          P("skinned", "bool", "for skinned meshes (default: decided by the template)"), P("static", "bool"), STAGE, P("force", "bool")], writes=True)
+          P("flags", help="material flags, comma separated: two_sided (cloth, leaves), dont_cast_shadow ..."), P("skinned", "bool", "for skinned meshes (default: decided by the template)"), P("static", "bool"), STAGE, P("force", "bool")], writes=True)
 def asset_material(a):
-    argv = ["material", a["name"]] + _opts(a, ("diffuse", "normal", "specular", "shader", "blend", "stage")) + [f for k, f in (("skinned", "--skinned"), ("static", "--static"), ("force", "--force")) if a.get(k)]
+    argv = ["material", a["name"]] + _opts(a, ("diffuse", "normal", "specular", "shader", "blend", "flags", "stage")) + [f for k, f in (("skinned", "--skinned"), ("static", "--static"), ("force", "--force")) if a.get(k)]
     return _stage_cmd(a, argv)
 
 
 @command("asset.mesh", "Stages a static or skinned mesh from an FBX, and reports its size so a wrong unit shows at once.",
          [P("fbx", required=True), P("name"), P("material", help="material names, comma separated, one per submesh"),
           P("scale", "number", help="multiply positions: 0.01 for an FBX from Blender's default export, which comes out 100 times too big", default=1.0),
+          P("cloth", help="simulate the mesh as cloth with this cloth material (cloth_materials.xml: flag, big_flag, cape ...); place it in a prefab's cloth_simulator"),
+          P("pin", choices=["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"], help="with --cloth: hold the vertices on this side (a flag's pole edge); otherwise vertex colour alpha 0 pins"),
           STAGE, P("force", "bool")], writes=True)
 def asset_mesh(a):
     import sdk_mesh
     P_ = [s["P"] for _, subs in sdk_mesh.submeshes(a["fbx"], float(a.get("scale") or 1.0)) for s in subs]
     import numpy as np
     P_ = np.concatenate(P_) if P_ else np.zeros((1, 3)); size = (P_.max(0) - P_.min(0)).round(3).tolist()
-    res = _stage_cmd(a, ["mesh", a["fbx"]] + _opts(a, ("name", "material", "scale", "stage")) + (["--force"] if a.get("force") else []))
+    res = _stage_cmd(a, ["mesh", a["fbx"]] + _opts(a, ("name", "material", "scale", "cloth", "pin", "stage")) + (["--force"] if a.get("force") else []))
     res["size_m"] = size
     big = max(size)
     if big > 60: res["warning"] = "the mesh is %.0f m across: if it should be smaller, the FBX unit is off (Blender's default export needs --scale 0.01)" % big
@@ -671,7 +673,8 @@ def scene_from_heightmap(a):
 @command("prefab.add", "Defines a prefab in the project (Prefabs/<id>_prefabs.xml): a model, a collision body, or both. Scenes and `bl live spawn` can then place it.",
          [P("name", help="the prefab's name", required=True), P("mesh", help="a model (metamesh) name"), P("physics", help="a collision shape name"),
           P("scale", help="x y z"), P("skeleton", help="a skeleton name: the model is then skinned to it and the prefab can play clips"),
-          P("particle", help="a particle effect by name, staged (python sdk/particles.py copy) or shipped"), P("remove", "bool")], writes=True)
+          P("particle", help="a particle effect by name, staged (python sdk/particles.py copy) or shipped"),
+          P("cloth", "bool", help="the mesh is cloth (staged with `asset.mesh --cloth`): it is placed in a cloth_simulator"), P("remove", "bool")], writes=True)
 def prefab_add(a):
     import scaffold
     d, pj = _need_project()
@@ -687,7 +690,7 @@ def prefab_add(a):
             if guid: break
         if guid is None: raise BlError("no particle effect named %s in the stage or the game" % a["particle"])
     if a.get("dry"): return {"would_edit": os.path.join(d, "Prefabs", pj["module"].lower() + "_prefabs.xml")}
-    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove")), a.get("skeleton"), guid),
+    return {"prefabs": scaffold.add_prefab(d, pj["module"], a["name"], a.get("mesh"), a.get("physics"), _floats(a.get("scale"), 3, "--scale"), bool(a.get("remove")), a.get("skeleton"), guid, bool(a.get("cloth"))),
             "particle_guid": guid,
             "note": "`bl deploy` copies it; the game reads it at startup"}
 

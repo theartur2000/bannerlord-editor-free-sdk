@@ -88,6 +88,9 @@ bl asset collision crate_body --hull crate.obj    # a collision body: capsules, 
 bl prefab add crate --mesh crate --physics crate_body     # a prefab of the project: scenes and `bl live spawn` place it
 python sdk/particles.py copy psys_campfire my_fire --color 0.1,1,0.1 --out <stage>/work/Assets
 bl prefab add my_fire_prefab --particle my_fire            # a particle effect on a prefab
+bl asset material my_flag --diffuse my_flag --flags two_sided
+bl asset mesh my_flag.fbx --cloth flag --pin xmax           # cloth: cooked from the mesh, the pole edge held
+bl prefab add my_flag_prefab --mesh my_flag --cloth         # placed in a cloth_simulator, as the shipped flags
 ```
 
 A scene is named by a folder path or by an id. Ids are looked up in the stage, the project, the module and then the

@@ -163,7 +163,7 @@ def register_scene(project, mod, scene_id, name=None, terrain="Plain", remove=Fa
     return re.findall(r'<Scene\s+id="([^"]+)"', text)
 
 
-def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=False, skeleton=None, particle_guid=None):
+def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=False, skeleton=None, particle_guid=None, cloth=False):
     """Adds a prefab to (or removes it from) the project's Prefabs/<id>_prefabs.xml, the form the shipped modules use:
     a game_entity with an optional collision body and model. The game reads every Prefabs/*.xml of a module at startup.
     Returns the prefab names in the file afterwards."""
@@ -178,7 +178,9 @@ def add_prefab(project, mod, name, mesh=None, physics=None, scale=None, remove=F
             rows += ['\t\t<skeleton skeleton_model="%s">' % skeleton, '\t\t\t<components>', '\t\t\t\t<meta_mesh_component name="%s"/>' % mesh, '\t\t\t</components>', '\t\t</skeleton>']
         elif mesh or particle_guid:
             rows.append('\t\t<components>')
-            if mesh: rows.append('\t\t\t<meta_mesh_component name="%s"/>' % mesh)
+            if mesh and cloth:                                   # a mesh simulated as cloth sits in a cloth_simulator, as the shipped flags
+                rows += ['\t\t\t<cloth_simulator>', '\t\t\t\t<meta_mesh_component name="%s"/>' % mesh, '\t\t\t</cloth_simulator>']
+            elif mesh: rows.append('\t\t\t<meta_mesh_component name="%s"/>' % mesh)
             if particle_guid:                                    # a particle effect is referred to by its guid, written as .NET prints it
                 rows += ['\t\t\t<particle_system_instanced_component>', '\t\t\t\t<effect_ref base_effect="{%s}"/>' % particle_guid, '\t\t\t</particle_system_instanced_component>']
             rows.append('\t\t</components>')

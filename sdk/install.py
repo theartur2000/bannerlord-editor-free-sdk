@@ -316,7 +316,7 @@ def main(argv=None):
         import sdk_mesh
         mats = opt("--material").split(",") if opt("--material") else None
         for f in [x for x in a[1:] if x.lower().endswith(".fbx")]:
-            out, rp, info = sdk_mesh.write_mesh(f, A, R, mats, force, name=opt("--name"), scale=float(opt("--scale", 1.0)))
+            out, rp, info = sdk_mesh.write_mesh(f, A, R, mats, force, name=opt("--name"), scale=float(opt("--scale", 1.0)), cloth=opt("--cloth"), pin=opt("--pin"))
             print("staged", out, "+", os.path.basename(rp))
             for x in info: print("  submesh %-28s material %-24s positions %d vertices %d triangles %d%s" % (x[0], x[1], x[2], x[3], x[4], " skinned" if x[5] else ""))
     elif cmd == "anim":

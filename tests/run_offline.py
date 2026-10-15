@@ -672,6 +672,36 @@ def resource_type_table_names_every_type_the_sdk_knows():
     assert restypes.describe(uuid_bytes("af41613e-bd4d-46ec-8284-debb56c042dc")) == "data type: Cloth map (cloth.py)"
 
 
+@test
+def cloth_flag_mesh_carries_flags_clothing_and_cook():
+    import cloth, sdk_mesh, tpac, tpac_pack, tw_formats
+    nx, nz = 9, 6                                                 # a 1.6 x 1.0 m grid standing in the xz plane
+    xs, zs = np.meshgrid(np.linspace(0, 1.6, nx), np.linspace(0, 1.0, nz))
+    P = np.c_[xs.ravel(), np.zeros(nx * nz), zs.ravel()]; n = len(P)
+    F = [(j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1) for j in range(nz - 1) for i in range(nx - 1)]
+    F += [(j * nx + i, (j + 1) * nx + i + 1, (j + 1) * nx + i) for j in range(nz - 1) for i in range(nx - 1)]
+    one = lambda v: np.tile(np.asarray(v, float), (n, 1))
+    sub = dict(name="test_flag", material="none", P=P, pi=np.arange(n, dtype=np.uint32), N=one((0, -1, 0)), T=one((1, 0, 0)), B=one((0, 0, 1)),
+               uv0=np.c_[xs.ravel() / 1.6, zs.ravel()], uv1=np.zeros((n, 2)), c0=np.full(n, 0xffffffff, np.uint32), F=np.array(F, np.uint32), W=None)
+    sub["c0"], pinned = cloth.pin_colours(P, sub["pi"], sub["c0"], "xmin")
+    assert pinned == nz and int((sub["c0"] >> 24 == 0).sum()) == nz
+    sub["flags"] = ["uses_cloth_simulation"]; sub["clothing"] = cloth.clothing_block("big_flag", wind=10.0)
+    out, rdc, _ = sdk_mesh.write_metamesh("test_flag", "test_flag", [sub], out_dir=TMP, rdc_dir=TMP, force=True)
+    pk = tpac_pack.read_package(out)
+    it = next(i for i in pk["items"] if i["type"] == sdk_mesh.META_TYPE)
+    s = tw_formats.parse_metamesh_record(it["record"])["submeshes"][0]
+    c = cloth.parse_clothing(s["params"])
+    assert s["flags"] == ["uses_cloth_simulation"] and c["name"] == "big_flag" and c["wind"] == 10.0 and c["factor"] == 5.0
+    cooks = [e for e in it["entries"] if bytes(e["rest"][16:32]) == cloth.CLOTH_COOK]
+    assert len(cooks) == 1 and bytes(cooks[0]["rest"][0:16]) == s["guid"]
+    raw = cooks[0]["data"] if cooks[0]["stored"] == cooks[0]["raw"] else tpac.lz4_decompress(cooks[0]["data"], cooks[0]["raw"])
+    assert raw == cloth.cook_submesh(sub) and cloth.parse_fabric(raw)
+    sub["c0"] = sub["c0"] & np.uint32(0x00ffffff)                  # nothing simulated: refused
+    try: sdk_mesh.write_metamesh("test_flag", "test_flag", [sub], out_dir=TMP, rdc_dir=TMP, force=True)
+    except ValueError: pass
+    else: raise AssertionError("a cloth submesh without a simulated vertex was written")
+
+
 def uuid_bytes(s):
     import uuid
     return uuid.UUID(s).bytes_le

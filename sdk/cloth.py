@@ -88,6 +88,28 @@ def parse_clothing(p):
     if o != len(p): raise ValueError("clothing block layout differs")
     return d
 
+# The clothing block of the shipped flag_5 (a flag simulated in place, Native meshes_shared_6): the starting point for new cloth.
+# The name picks a material of ModuleData/cloth_materials.xml ("flag", "big_flag", "cape" ...).
+FLAG_CLOTHING = dict(factor=5.0, name="flag", bending_stiffness=0.5, shearing_stiffness=0.5, stretching_stiffness=0.5, anchor_stiffness=1.0,
+                     damping=0.0, gravity=150.0, linear_inertia=1.0, air_drag=0.25, wind=70.0, i0=120, b0=0, b1=0,
+                     max_linear_velocity=-1.0, linear_velocity_multiplier=1.0, b2=0)
+
+
+def clothing_block(material="flag", **values):
+    """Clothing block bytes for a submesh simulated in place: flag_5's values with the material name (and any field) changed."""
+    d = dict(FLAG_CLOTHING, name=material); d.update(values); return pack_clothing(d)
+
+
+def pin_colours(P, pi, c0, side, tolerance=0.02):
+    """Vertex colours with alpha 0 (pinned: held by the mesh, not simulated) on the vertices within `tolerance` of the extent of the
+    mesh on one side ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax"), alpha 255 and blue 255 (not static) everywhere else."""
+    axis = "xyz".index(side[0]); P = np.asarray(P, np.float64)[:, axis][np.asarray(pi)]
+    edge = P.min() if side[1:] == "min" else P.max(); span = max(float(np.ptp(P)), 1e-6)
+    pinned = np.abs(P - edge) <= tolerance * span
+    c = (np.asarray(c0, np.uint32) & np.uint32(0x00ffff00)) | np.uint32(0xff000000) | np.uint32(0xff)
+    return np.where(pinned, c & np.uint32(0x00ffffff), c).astype(np.uint32), int(pinned.sum())
+
+
 def pack_clothing(d):
     nm = d["name"].encode("utf-8", "surrogateescape")
     return struct.pack("<fI", d["factor"], len(nm)) + nm + struct.pack("<9f", *[d[k] for k in MATERIAL_FIELDS]) + struct.pack("<iBB", d["i0"], d["b0"], d["b1"]) \

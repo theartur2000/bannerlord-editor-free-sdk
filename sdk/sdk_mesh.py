@@ -406,11 +406,14 @@ def meta_record(src_guid, subs):
     for i, s in enumerate(subs):
         P = s["P"]; mn, mx = P.min(0).astype(np.float32), P.max(0).astype(np.float32)
         c = (mn + mx) * np.float32(0.5); r = np.sqrt(np.sum((mx - c) ** 2, dtype=np.float32), dtype=np.float32)   # float32 as the editor
-        out += SUB_HEAD + bytes.fromhex("0002000000") + s["guid"] + tpac._S(s["name"]) + bytes(8) + s["material_guid"] \
+        flags = s.get("flags") or []          # "uses_cloth_simulation" on a submesh simulated in place (a flag, a banner)
+        out += SUB_HEAD + bytes.fromhex("0002000000") + s["guid"] + tpac._S(s["name"]) + struct.pack("<II", 0, len(flags)) \
+            + b"".join(tpac._S(f) for f in flags) + s["material_guid"] \
             + struct.pack("<8f", *[1.0] * 8) + bytes(36) \
             + struct.pack("<5I", len(P), len(s["F"]), len(s["pi"]), len(s["W"]) if s["W"] is not None else 0, 0) \
             + struct.pack("<4f", *mn, 1) + struct.pack("<4f", *mx, 1) + struct.pack("<4f", *c, 1) + struct.pack("<f", r) \
-            + struct.pack("<I", s.get("nbones", 28) if s["W"] is not None else 0) + SUB_PARAMS + b"\0" \
+            + struct.pack("<I", s.get("nbones", 28) if s["W"] is not None else 0) \
+            + (bytes(4) + s["clothing"] if s.get("clothing") else SUB_PARAMS + b"\0") \
             + (struct.pack("<I", 1) if i + 1 < len(subs) else struct.pack("<I", 0) + bytes(16) + b"\x01\x01")
     # the next submesh's 00 02 00 00 + 16 zero follows the u32 1 (written at the top of the loop)
     struct.pack_into("<I", out, 0, len(out) - 8)
@@ -440,15 +443,22 @@ def metamesh_owner(name, skip=None):
             i = meta.find(META_TYPE, i + 1)
     return None
 
-def write_mesh(fbx, out_dir=None, rdc_dir=None, materials=None, force=False, ids=None, mtl_dir=None, name=None, scale=1.0):
+def write_mesh(fbx, out_dir=None, rdc_dir=None, materials=None, force=False, ids=None, mtl_dir=None, name=None, scale=1.0, cloth=None, pin=None):
     """<fbx name>_geo.tpac + RuntimeDataCache/<package>.rdc from an FBX (one mesh node). materials: list of material
-    names per submesh (default: the FBX material names). Returns (tpac path, rdc path, [submesh summaries])."""
+    names per submesh (default: the FBX material names). cloth: a cloth material name (cloth_materials.xml): every submesh is
+    then simulated in place and cooked; the vertices with colour alpha 0 are pinned, or those on the side `pin` names
+    ("xmin" ... "zmax"). Returns (tpac path, rdc path, [submesh summaries])."""
     base = os.path.splitext(os.path.basename(fbx))[0]
     out = os.path.join(out_dir or tpac.ASSETS, base + "_geo.tpac")
     if os.path.exists(out) and not force: raise FileExistsError(out + " exists (use --force)")
     metas = submeshes(fbx, scale)
     if len(metas) != 1: raise ValueError("%s: %d mesh nodes (one expected)" % (fbx, len(metas)))
     mname, subs = metas[0]
+    if cloth:
+        import cloth as cloth_
+        for s in subs:
+            s["flags"] = ["uses_cloth_simulation"]; s["clothing"] = cloth_.clothing_block(cloth)
+            if pin: s["c0"], n = cloth_.pin_colours(s["P"], s["pi"], s["c0"], pin)
     return write_metamesh(base, mname, subs, open(fbx, "rb").read(), out_dir, rdc_dir, materials, force, ids, mtl_dir, name)
 
 def write_metamesh(base, mname, subs, source_bytes=b"", out_dir=None, rdc_dir=None, materials=None, force=False, ids=None,
@@ -477,13 +487,20 @@ def write_metamesh(base, mname, subs, source_bytes=b"", out_dir=None, rdc_dir=No
         if g is None: print("WARNING: material %s not found, submesh %s gets a zero guid" % (s["material"], s["name"]))
         s["material_guid"] = g or bytes(16)
     edits = [edit_blob(s) for s in subs]
+    cooks = []                                # cloth simulated in place: the fabric cooked from the submesh (vertex colour alpha 0 = pinned)
+    for s in subs:
+        if "uses_cloth_simulation" in (s.get("flags") or []):
+            import cloth
+            c = cloth.cook_submesh(s)
+            if c is None: raise ValueError("submesh %s is marked for cloth but no vertex has a colour alpha above 0" % s["name"])
+            cooks.append((cloth.CLOTH_COOK, c, s["guid"]))
     src_rec = bytearray(4) + struct.pack("<II", 0, 1) + tpac._S(config.source_base(base + ".fbx")) \
         + struct.pack("<Q", tpac.xxh64(source_bytes)) + struct.pack("<I", 1) + META_TYPE + meta_guid + bytes(4)
     struct.pack_into("<I", src_rec, 0, len(src_rec) - 8)
     settings = MESH_SETTINGS_HEAD + tpac._S(mname) + MESH_SETTINGS_TAIL
     data = pack_mesh_package(package, [(tpac.IMPORT_TYPE, src_guid, 0, base + ".fbx", bytes(src_rec), [(tpac.ANIM_SETTINGS, settings, src_guid)]),
                                        (META_TYPE, meta_guid, 1, mname, meta_record(src_guid, subs),
-                                        [(EDIT_DATA, e, s["guid"]) for e, s in zip(edits, subs)] + [(SUBMESH_NAMES, names_blob(subs), meta_guid)])])
+                                        [(EDIT_DATA, e, s["guid"]) for e, s in zip(edits, subs)] + cooks + [(SUBMESH_NAMES, names_blob(subs), meta_guid)])])
     rp = tpac.rdc_path(package, rdc_dir)
     entries = [(meta_guid, s["guid"], VERTEX_STREAM, stream_blob(parse_edit(e)), struct.pack("<Q", tpac.xxh64(e)), bytes(8)) for e, s in zip(edits, subs)]
     os.makedirs(os.path.dirname(rp), exist_ok=True)
