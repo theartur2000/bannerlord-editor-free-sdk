@@ -247,7 +247,7 @@ The two-halves design uses the engine as a build server. The longer aim is to ne
 | Physics cooking | `PhysXCooking_64.dll` ships in `bin` | Done: `sdk/physx_cook.py` calls the same library through ctypes and reproduces every shipped cook | done |
 | Terrain normals, levels of detail, material maps | all inside `terrain.bin` | Computed by the SDK once the chunks are decoded | M |
 | Terrain shaders | 848 shader source files under `Shaders\Sources` (terrain ones included) and `d3dcompiler_47.dll`; the per-scene `ShaderCache` is a 28 KB header file, not compiled shaders | Generate the header directly; compile with the shipped compiler if needed | M |
-| Light and GI bake | none of the 67 shipped battle terrains that carry the flag has baked GI | Not needed for battlefields. For towns and interiors: a custom probe baker, the largest single item | L or more |
+| Light and GI bake | none of the 67 shipped battle terrains that carry the flag has baked GI | Not needed for battlefields. For towns and interiors: `prt_data.bin` is read and written (`sdk/prt.py`) and the editor's baker is ported (`sdk/prt_bake.py`: same algorithm, numpy ray caster, constant albedo, no probe placement or point lights; slow) | M left: albedo from textures, placement, a faster caster |
 | Scene optimisation, occlusion, flora billboards | native only | On demand | M each |
 
 Method: static reading in Ghidra (two analysed projects exist) plus the running editor as an oracle. Give the editor a
