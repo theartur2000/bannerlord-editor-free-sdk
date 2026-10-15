@@ -9,7 +9,8 @@ and no Studio project are involved.
     Sounds/src/<event path>/     the project's copies of the WAV files
     <home>/sound/<Module>/       the generated FMOD project and the build (rebuilt every time, safe to delete)
     <stage>/Sounds/PC/<Module>.bank
-    <stage>/ModuleData/soundfiles.xml                 registers the bank (the engine loads module banks after Native's)
+    <stage>/Sounds/PC/<Module>Master.strings.bank     FMOD's table from event path to GUID (for events created by path)
+    <stage>/ModuleData/soundfiles.xml                 registers the banks (the engine loads module banks after Native's)
     <stage>/ModuleData/<module>_sound_event_data.xml  the events: path, GUID, length, distance, parameters
     <stage>/ModuleData/project.mbproj                 the two entries that point the engine at those files
 
@@ -22,7 +23,9 @@ How the events work (the route is the one in docs/AGENTS.md "Sound"):
     and its engine attributes (max_distance, parameter_indices ...) are copied from that Native event.
   - An event whose path is a Native path replaces it: the engine's loader overwrites an existing path with the module's row
     (new GUID, new bank). Every other path is added.
-  - The game resolves an event by GUID; a module bank never reuses a Native GUID. All GUIDs are uuid5 of module and path, so a
+  - The game resolves an event by GUID; a module bank never reuses a Native GUID. An event created by its path instead (the engine's
+    name map has only Native's and overridden paths) is looked up by FMOD in the loaded strings banks: the module ships its own,
+    and a new event's path in the FMOD project is its path in the game (docs/AGENTS.md "Sound"). All GUIDs are uuid5 of module and path, so a
     rebuild keeps them.
   - project.mbproj rule: every file it names must exist. The native sound loader writes through a null pointer when one is
     missing, so the stage ships the files first and the entries are only written beside them (install checks it again).
@@ -47,6 +50,7 @@ MASTER_EVENT_FOLDER = "{5be898cb-8569-49d8-9fb9-8dfff6905d48}"
 MASTER_BANK_FOLDER = "{7556c034-3ca3-48e4-90c8-43d82096a832}"
 MASTER_ASSET_FOLDER = "{b6479c9e-7ccd-4767-8111-a7d2a8925708}"
 SAMPLE_SOUND_BANK = "{7d4941b2-09af-4406-8ebb-1cd2d87d250e}"   # the sample's ModuleSoundBank: shared by every mod built from it
+SAMPLE_MASTER_BANK = "{b989e444-4a34-490e-a51d-1bc8e635e095}"  # the sample's ModuleMasterBank: ditto; replaced by a master bank of the module's own
 # sample metadata folders copied as they are (mixer, presets, platform); events, audio, profiler data are not
 COPY_DIRS = ("BankFolder", "EffectPreset", "EffectPresetFolder", "EncodingSetting", "Group", "MixerView",
              "ParameterPreset", "ParameterPresetFolder", "Platform", "Port", "ProfilerFolder", "Return",
@@ -502,12 +506,14 @@ def generate(module, events, native, sample, work, build_dir):
     for sub, fid in (("EventFolder", MASTER_EVENT_FOLDER), ("Asset", MASTER_ASSET_FOLDER)):
         os.makedirs(os.path.join(meta, sub), exist_ok=True)
         shutil.copy2(os.path.join(smeta, sub, fid + ".xml"), os.path.join(meta, sub, fid + ".xml"))
-    # banks: the sample's master bank (needed to build, never shipped) and ours with its own GUID
+    # banks: ours with its own GUID, and a master bank of the module's own (its strings bank is shipped, the master bank is not:
+    # the strings bank is what lets the engine find an event by its path, see strings_name)
     os.makedirs(os.path.join(meta, "Bank"))
     for f in glob.glob(os.path.join(smeta, "Bank", "*.xml")):
-        if SAMPLE_SOUND_BANK not in f: shutil.copy2(f, os.path.join(meta, "Bank"))
-    bank_id = gid(module, "bank")
+        if SAMPLE_SOUND_BANK not in f and SAMPLE_MASTER_BANK not in f: shutil.copy2(f, os.path.join(meta, "Bank"))
+    bank_id = gid(module, "bank"); master_id = gid(module, "master bank")
     write_objs(os.path.join(meta, "Bank", bank_id + ".xml"), [Obj("Bank", bank_id, [("name", [module])], [("folder", [MASTER_BANK_FOLDER])])])
+    write_objs(os.path.join(meta, "Bank", master_id + ".xml"), [Obj("Bank", master_id, [("name", [master_name(module)]), ("isMasterBank", ["true"])], [("folder", [MASTER_BANK_FOLDER])])])
     ws = read_objs(os.path.join(smeta, "Workspace.xml"))      # workspace: the build goes to our folder
     ws[0].set_prop("builtBanksOutputDirectory", build_dir.replace("\\", "/"))
     write_objs(os.path.join(meta, "Workspace.xml"), ws)
@@ -539,8 +545,11 @@ def generate(module, events, native, sample, work, build_dir):
                                        ("length", [fmt(round(m["len"], 6))])], [("masterAssetFolder", [MASTER_ASSET_FOLDER])])
             if m["len"] > STREAM_SEC: a.set_prop("isStreaming", "true")
             audio_objs.append(a)
-        top = [module.lower()] + rel.split("/")[:-1]
-        fid = folder(top)
+        # the event's path inside the project is its path in the game for a new event: the strings bank maps that path to the GUID, and the
+        # engine asks FMOD for it by path (SoundEvent.CreateEventFromString). A replaced Native path keeps Native's own path-to-GUID
+        # entry, so the replacement sits under the module's name instead.
+        top = ([module.lower()] if ev["replaces"] else []) + rel.split("/")[:-1]
+        fid = folder(top) if top else MASTER_EVENT_FOLDER
         params = [x for x in attrs.get("parameter_indices", "").split(",") if x]
         objs, eid, length, missing, spatial = clone_event(module, path, tlocal, tid, sample, params, wav_info_, audio_ids, fid, bank_id, ev["loop"],
                                                           ev["mix_ref"].startswith(RANDOMISE))
@@ -552,7 +561,7 @@ def generate(module, events, native, sample, work, build_dir):
             notes.append("%s: its attributes are %s but the mixing template %s is %s: `like` names the event both come from, pick one that is %s" % (
                 path, "3D" if is3d else "2D", tpath, "3D" if spatial else "2D", "3D" if is3d else "2D"))
         row = dict(attrs); row.update(guid=eid, path=path, length="-1" if ev["loop"] else str(round(length, 4)))
-        manifest.append({"path": path, "guid": eid, "replaces_native": ev["replaces"], "attributes_from": ev["attrs_ref"], "mixing_from": ev["mix_ref"],
+        manifest.append({"path": path, "guid": eid, "fmod_path": "event:/" + "/".join(top + [rel.rsplit("/", 1)[1]]), "replaces_native": ev["replaces"], "attributes_from": ev["attrs_ref"], "mixing_from": ev["mix_ref"],
                          "template": tpath, "template_depth": depth, "loop": ev["loop"], "length": -1 if ev["loop"] else round(length, 4),
                          "files": [w["asset"] for w in wav_info_], "row": {k: row[k] for k in ROW_KEYS if k in row}})
     # references to objects the project does not have (sample objects that were left out) are dropped
@@ -570,8 +579,19 @@ def generate(module, events, native, sample, work, build_dir):
     return manifest, notes, dangling
 
 
+def master_name(module): return module + "Master"
+
+
+def strings_name(module):
+    """The strings bank FMOD Studio writes beside the master bank. The engine creates an event two ways: by its index in the table
+    built from sound_event_data (the GUID there; what the game's own code does), and by its path (SoundEvent.CreateEventFromString,
+    the bridge's `play by=path`, mods): FMOD then looks the path up in the loaded strings banks. Native's only knows Native's paths."""
+    return master_name(module) + ".strings.bank"
+
+
 def run_studio(studio, fspro, module, log):
-    p = subprocess.run([studio, "-build", "-banks", module, "-platforms", "Desktop", fspro], capture_output=True, text=True, timeout=3600)
+    p = subprocess.run([studio, "-build", "-banks", "%s,%s" % (module, master_name(module)), "-platforms", "Desktop", "-export-guids", fspro],
+                       capture_output=True, text=True, timeout=3600)
     out = p.stdout + "\n" + p.stderr
     with open(log, "w", encoding="utf-8") as f: f.write(out)
     return p.returncode, out
@@ -579,9 +599,10 @@ def run_studio(studio, fspro, module, log):
 
 # ------------------------------------------------------------------------------------------------ the ModuleData files
 def soundfiles_xml(module):
+    files = "".join('    <file name="%s" decompress_samples="false" />\n' % n for n in (strings_name(module), module + ".bank"))
     return ('<?xml version="1.0" encoding="utf-8"?>\n<!-- %s: banks in Sounds/PC, loaded after Native\'s. Written by bl sound.build. -->\n'
             '<base xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" type="sound">\n'
-            '  <asset_files>\n    <file name="%s.bank" decompress_samples="false" />\n  </asset_files>\n</base>\n' % (module, module))
+            '  <asset_files>\n%s  </asset_files>\n</base>\n' % (module, files))
 
 
 def event_data_name(module): return "%s_sound_event_data.xml" % module.lower()
@@ -910,7 +931,7 @@ def build(project, module, stage="work", dry=False, decode=4):
     events = resolve_events(project, spec, native)
     work = work_dir(module); stage_dir = os.path.join(config.SDK_STAGE_DIR, stage)
     bank_rel = "Sounds/PC/%s.bank" % module
-    plan = [bank_rel, "ModuleData/soundfiles.xml", "ModuleData/" + event_data_name(module), "ModuleData/project.mbproj"]
+    plan = [bank_rel, "Sounds/PC/" + strings_name(module), "ModuleData/soundfiles.xml", "ModuleData/" + event_data_name(module), "ModuleData/project.mbproj"]
     base, base_from = existing_mbproj(project, stage_dir)
     if dry:
         return {"would_build": module + ".bank", "events": [{"path": e["path"], "files": len(e["files"]), "replaces_native": e["replaces"], "mixing_from": e["mix_ref"],
@@ -928,7 +949,8 @@ def build(project, module, stage="work", dry=False, decode=4):
     bank = os.path.join(build_dir, "PC", module + ".bank")
     lines = [l.strip() for l in out.splitlines() if l.strip()]
     for l in lines[-12:]: print(l)
-    if not os.path.isfile(bank):
+    strings = os.path.join(build_dir, "PC", strings_name(module))
+    if not os.path.isfile(bank) or not os.path.isfile(strings):
         raise SoundError("FMOD Studio built no bank (exit code %s)" % code, "the output is in " + log + ": " + " | ".join(l for l in lines if re.search(r"error|fail", l, re.I))[:600])
     warn = [l for l in lines if re.search(r"warning", l, re.I)]
     # the stage: the bank and the ModuleData files, written together
@@ -937,19 +959,38 @@ def build(project, module, stage="work", dry=False, decode=4):
     write_text(os.path.join(stage_dir, "ModuleData", "project.mbproj"), mbproj_text(module, base))
     os.makedirs(os.path.join(stage_dir, "Sounds", "PC"), exist_ok=True)
     shutil.copy2(bank, os.path.join(stage_dir, "Sounds", "PC", module + ".bank"))
+    shutil.copy2(strings, os.path.join(stage_dir, "Sounds", "PC", strings_name(module)))
+    # FMOD's own list of what is in the project (-export-guids): the path each GUID has there is what the strings bank answers
+    # to a lookup by path, so it must be the event's path in the game
+    exported = {}
+    gp = os.path.join(build_dir, "GUIDs.txt")
+    if os.path.isfile(gp):
+        with open(gp, encoding="utf-8-sig") as f:
+            for line in f:
+                g, _, pth = line.strip().partition(" ")
+                exported[g.lower()] = pth
+    else: notes.append("FMOD Studio wrote no GUIDs.txt: the paths in the strings bank were not checked")
+    for m in manifest:
+        if exported and exported.get(m["guid"].lower()) != m["fmod_path"]:
+            raise SoundError("%s has the path %s in the FMOD project, expected %s" % (m["path"], exported.get(m["guid"].lower()), m["fmod_path"]))
+        m["path_in_strings_bank"] = m["fmod_path"] == m["path"]
     sources = {e["path"]: e["files"] for e in events}
     for m in manifest:
         m["distinct"] = len({hashlib.sha1(open(f, "rb").read()).hexdigest() for f in sources[m["path"]]})
         m["files_count"] = len(m["files"])
     check = check_bank(bank, [dict(guid=m["guid"], path=m["path"], files=m["files_count"], distinct=m["distinct"]) for m in manifest], sources, decode)
     with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump({"module": module, "bank": module + ".bank", "events": [{k: v for k, v in m.items() if k not in ("files_count",)} for m in manifest]}, f, indent=1)
+        json.dump({"module": module, "bank": module + ".bank", "strings_bank": strings_name(module), "events": [{k: v for k, v in m.items() if k not in ("files_count",)} for m in manifest]}, f, indent=1)
     check["bank"] = os.path.join(stage_dir, "Sounds", "PC", module + ".bank")
+    check["strings_bank"] = {"file": os.path.join(stage_dir, "Sounds", "PC", strings_name(module)), "format": "0x%x/0x%x" % bank_format(strings),
+                             "events_found_by_path": sorted(m["path"] for m in manifest if m["path_in_strings_bank"]),
+                             "replacements_not_by_path": sorted(m["path"] for m in manifest if not m["path_in_strings_bank"])}
+    if bank_format(strings) != FORMAT: check["problems"].append("the strings bank has the format %s" % check["strings_bank"]["format"]); check["ok"] = False
     notes += check.get("notes", [])
     if base_from and os.path.normcase(base_from) == os.path.normcase(os.path.join(project, "ModuleData", "project.mbproj")):
         notes.append("the project has its own ModuleData/project.mbproj: `bl deploy` copies that file over the installed one and drops the sound entries; add the two sound lines of the staged file to it")
     return {"bank": os.path.join(stage_dir, "Sounds", "PC", module + ".bank"), "bytes": os.path.getsize(bank), "stage": stage_dir,
-            "staged": [os.path.join(stage_dir, *p.split("/")) for p in plan], "events": [{k: m[k] for k in ("path", "guid", "replaces_native", "mixing_from", "template", "template_depth", "loop", "length")}
+            "staged": [os.path.join(stage_dir, *p.split("/")) for p in plan], "events": [{k: m[k] for k in ("path", "guid", "replaces_native", "mixing_from", "template", "template_depth", "loop", "length", "fmod_path")}
                                                                        | {"files": m["files_count"]} for m in manifest],
             "check": {k: v for k, v in check.items() if k not in ("events",)}, "ok": check["ok"], "notes": notes, "studio_warnings": warn[:10],
             "work": work}

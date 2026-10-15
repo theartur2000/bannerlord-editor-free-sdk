@@ -794,7 +794,7 @@ def sound_events_are_kept_in_the_project():
 def sound_moduledata_files_register_the_bank_and_keep_other_entries():
     import sound
     sf = ET.fromstring(sound.soundfiles_xml("SndMod"))
-    assert sf.get("type") == "sound" and [f.get("name") for f in sf.iter("file")] == ["SndMod.bank"] and sf.find("asset_files/file").get("decompress_samples") == "false"
+    assert sf.get("type") == "sound" and [f.get("name") for f in sf.iter("file")] == ["SndModMaster.strings.bank", "SndMod.bank"] and sf.find("asset_files/file").get("decompress_samples") == "false"
     rows = [dict(guid="{0e6181f0-6f4d-5193-b9ab-7dbdba49071b}", path="event:/sndmod/a&b", length="0.6", max_distance="450", priority_multiplier="1", bassgid="-1",
                  parameter_indices="isPlayer,Armor Type", send_is_player="true", send_occlusion="false", ignored="x")]
     ev = ET.fromstring(sound.event_data_xml(rows)); e = ev.find("events/event")
@@ -865,10 +865,11 @@ def sound_stage_goes_into_the_module_and_is_checked():
     ga = "{0e6181f0-6f4d-5193-b9ab-7dbdba49071b}"
     stage = os.path.join(TMP, "sndstage")
     _write(os.path.join(stage, "Sounds", "PC", "Fake.bank"), _fake_bank([(ga, 1)])); _write(os.path.join(stage, "ModuleData", "soundfiles.xml"), sound.soundfiles_xml("Fake").encode())
+    _write(os.path.join(stage, "Sounds", "PC", "FakeMaster.strings.bank"), _fake_bank([]))
     _write(os.path.join(stage, "ModuleData", "fake_sound_event_data.xml"), sound.event_data_xml([dict(guid=ga, path="event:/fake/a", max_distance="100000", length="1")]).encode())
     _write(os.path.join(stage, "ModuleData", "project.mbproj"), sound.mbproj_text("Fake").encode())
     plan = {os.path.relpath(t, install.config.MODULE).replace(os.sep, "/"): os.path.basename(s) for s, t in install.plan_for(stage)}
-    assert plan == {"Sounds/PC/Fake.bank": "Fake.bank", "ModuleData/soundfiles.xml": "soundfiles.xml", "ModuleData/fake_sound_event_data.xml": "fake_sound_event_data.xml",
+    assert plan == {"Sounds/PC/Fake.bank": "Fake.bank", "Sounds/PC/FakeMaster.strings.bank": "FakeMaster.strings.bank", "ModuleData/soundfiles.xml": "soundfiles.xml", "ModuleData/fake_sound_event_data.xml": "fake_sound_event_data.xml",
                     "ModuleData/project.mbproj": "project.mbproj"}, plan
     assert sound.verify_stage(stage) == []
     def broken(edit, why, rel):                                    # each way the engine would misread the stage is named
@@ -879,6 +880,7 @@ def sound_stage_goes_into_the_module_and_is_checked():
             raw = open(p, "rb").read(); open(p, "wb").write(edit(raw))
         errs = sound.verify_stage(copy); assert any(why in e for e in errs), (why, errs)
     broken("delete", "neither staged nor in the module", "Sounds/PC/Fake.bank")
+    broken("delete", "neither staged nor in the module", "Sounds/PC/FakeMaster.strings.bank")                 # listed, so it must be there
     broken(lambda b: b.replace(b'name="Fake.bank"', b'name="Other.bank"'), "not listed", "ModuleData/soundfiles.xml")
     broken(lambda b: b.replace(b' max_distance="100000"', b""), "max_distance", "ModuleData/fake_sound_event_data.xml")
     broken(lambda b: b.replace(ga.encode(), b"{nope}"), "valid guid", "ModuleData/fake_sound_event_data.xml")
@@ -895,6 +897,7 @@ def bridge_commands_are_in_the_template_the_list_and_the_summary():
         assert 'case "%s":' % c in tpl, c + " has no case in Bridge.cs"
         assert ("\n//   " + c + " ") in tpl or ("\n//   " + c + "\n") in tpl, c + " is not described in the header of Bridge.cs"
     assert "SoundEvent.GetEventIdFromString" in tpl and {"play", "stop"} <= set(bridge.COMMANDS)
+    assert "SoundEvent.CreateEvent(sid, sc)" in tpl, "play creates by index, as the game does: by path a module's new events are not found without a strings bank"
 
 
 @test
@@ -917,14 +920,21 @@ def sound_build_with_fmod_studio():
         return out["result"]
     run("sound.add", "event:/sndmod/combat/hit", *hit, "--like", "event:/mission/combat/blunt/med")
     run("sound.add", "event:/sndmod/ui/click", click, "--like", "event:/ui/default")
+    run("sound.add", "event:/mission/combat/cut/med", hit[0])                                                  # replaces a Native event
     r = run("sound.build", "--decode", "4")
-    assert r["ok"] and r["check"]["format"] == "0x8e/0x8c" and r["check"]["samples"] == 3 and r["check"]["stereo"] == 1 and not r["check"]["problems"], r
-    assert [e["files"] for e in r["events"]] == [2, 1] and all(e["template"] for e in r["events"])
-    dec = r["check"]["decode"]; assert "skipped" in dec or dec["matched"] == dec["tried"] == 3, dec
+    assert r["ok"] and r["check"]["format"] == "0x8e/0x8c" and r["check"]["samples"] == 4 and r["check"]["stereo"] == 1 and not r["check"]["problems"], r
+    assert [e["files"] for e in r["events"]] == [1, 2, 1] and all(e["template"] for e in r["events"])
+    dec = r["check"]["decode"]; assert "skipped" in dec or dec["matched"] == dec["tried"] == 4, dec
+    # a new event has its own path in FMOD's project, which the strings bank answers to; a replaced Native path stays under the module's name
+    assert {e["path"]: e["fmod_path"] for e in r["events"]} == {"event:/mission/combat/cut/med": "event:/sndmod/mission/combat/cut/med", "event:/sndmod/combat/hit": "event:/sndmod/combat/hit",
+                                                              "event:/sndmod/ui/click": "event:/sndmod/ui/click"}, r["events"]
+    assert r["check"]["strings_bank"]["format"] == "0x8e/0x8c" and r["check"]["strings_bank"]["replacements_not_by_path"] == ["event:/mission/combat/cut/med"]
     stage = os.path.join(env["BANNERLORD_SDK_HOME"], "stage", "work")
-    for f in ("Sounds/PC/SndMod.bank", "ModuleData/soundfiles.xml", "ModuleData/sndmod_sound_event_data.xml", "ModuleData/project.mbproj"): assert os.path.isfile(os.path.join(stage, *f.split("/"))), f
+    for f in ("Sounds/PC/SndMod.bank", "Sounds/PC/SndModMaster.strings.bank", "ModuleData/soundfiles.xml", "ModuleData/sndmod_sound_event_data.xml", "ModuleData/project.mbproj"): assert os.path.isfile(os.path.join(stage, *f.split("/"))), f
+    assert not os.path.exists(os.path.join(stage, "Sounds", "PC", "SndModMaster.bank")), "the master bank repeats Native's mixer: it is not shipped"
+    assert [f.get("name") for f in ET.parse(os.path.join(stage, "ModuleData", "soundfiles.xml")).getroot().iter("file")] == ["SndModMaster.strings.bank", "SndMod.bank"]
     rows = list(ET.parse(os.path.join(stage, "ModuleData", "sndmod_sound_event_data.xml")).getroot().iter("event"))
-    assert [(x.get("path"), x.get("max_distance")) for x in rows] == [("event:/sndmod/combat/hit", "450"), ("event:/sndmod/ui/click", "100000")]
+    assert [(x.get("path"), x.get("max_distance")) for x in rows] == [("event:/mission/combat/cut/med", "450"), ("event:/sndmod/combat/hit", "450"), ("event:/sndmod/ui/click", "100000")]
     again = run("sound.build"); assert [e["guid"] for e in again["events"]] == [e["guid"] for e in r["events"]]                        # a rebuild keeps the GUIDs
     assert run("sound.info", "--decode", "3")["ok"]
 

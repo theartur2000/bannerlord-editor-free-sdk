@@ -232,18 +232,25 @@ A replaced event keeps its own attributes: the engine sets its parameters by ind
 | File | Purpose |
 |---|---|
 | `Sounds/PC/<Module>.bank` | the events and samples; FMOD bank format 0x8e/0x8c like Native's |
-| `ModuleData/soundfiles.xml` | lists the bank; the engine loads module banks after Native's |
+| `Sounds/PC/<Module>Master.strings.bank` | FMOD's table from event path to GUID for the module's events (the module's own master bank is built for it and not shipped: it repeats Native's mixer) |
+| `ModuleData/soundfiles.xml` | lists both banks; the engine loads module banks after Native's |
 | `ModuleData/<module>_sound_event_data.xml` | one row per event: path, GUID, length, distance, parameters; the engine reads it as raw XML |
 | `ModuleData/project.mbproj` | the entries `soln_sound_files` and `soln_sound_event_data` that name those two files; other entries of an existing file stay |
 
-`install` records all four in its manifest, so `revert` removes them. Rules the build keeps:
+`install` records all five in its manifest, so `revert` removes them. Rules the build keeps:
 
 - Every file `project.mbproj` names must exist: the native sound loader crashes on a missing one. The stage ships them together
   and `install` checks the registration again.
 - A module bank never reuses a Native GUID. GUIDs are `uuid5` of module id and path, so a rebuild keeps them.
-- The game resolves an event by its GUID and a path through `sound_event_data`. A path that Native has is overwritten by the
-  module's row (the loader replaces an existing path and appends a new one); a second `sound_event_data.xml` merged by the
-  managed code, or an XSLT, is not used.
+- The engine keeps a table of events built from `sound_event_data`: a path, its index, its GUID. A path that Native has is
+  overwritten by the module's row (the loader replaces an existing path and appends a new one); a second
+  `sound_event_data.xml` merged by the managed code, or an XSLT, is not used.
+- An event is created in one of two ways. By index (`SoundEvent.CreateEvent`, `PlaySound2D(index)`, `Mission.MakeSound`: what the
+  game's own code does) the engine hands FMOD the GUID from the table. By path (`SoundEvent.CreateEventFromString`) the engine
+  looks the path up in its name map, which holds the paths Native loaded and the paths a module overrides, but not a module's
+  new ones; for those FMOD is asked for the path and answers only from a loaded strings bank (Native's knows Native's paths only).
+  That is why the build ships a strings bank, and why a new event's path in the FMOD project is its path in the game; a replaced
+  Native path sits under the module's name in the project, because the Native strings bank already answers that path.
 - `bl deploy` copies the project's `ModuleData`. If the project has its own `ModuleData/project.mbproj`, add the two sound lines
   of the staged file to it, or the deploy overwrites the installed registration.
 
@@ -251,8 +258,9 @@ Replacing a Native event changes it everywhere the game plays it. Native often h
 armour type; replace each one that should change. Loading such a module (a bank of about 1,600 events, most of them Native
 paths) ran in the game without FMOD errors; hearing the replaced sounds in game is not yet confirmed for this SDK's build.
 
-**In-game check.** `bl live play` answers `event_index` (-1: the engine does not know the path, so the `sound_event_data` row did
-not load), `mode` (2D or 3D), `started`, and how many sounds from `play` are still going; the module's log
+**In-game check.** `bl live play` creates the sound by index and answers `event_index` (-1: the engine does not know the path, so the
+`sound_event_data` row did not load), `route`, `mode` (2D or 3D), `started`, and how many sounds from `play` are still going;
+`by=path` creates it by the path instead, which tests the strings bank; the module's log
 (`<module>_log.txt`) gets a line per play. The engine's log (`rgl_log_<pid>.txt` in
 `ProgramData\Mount and Blade II Bannerlord\logs`) shows the loading: `Loading xml file: $BASE/Modules/<Module>/ModuleData/soundfiles.xml`
 and `.../<module>_sound_event_data.xml` under "reading sound_files xml files" and "reading sound_event_data xml files". A bank the
