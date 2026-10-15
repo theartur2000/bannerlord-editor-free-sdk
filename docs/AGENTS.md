@@ -126,6 +126,10 @@ bl worldmap.move --id town_S1 --x 375 --y 530     # position, gate and the town'
 A move is a data patch (posX, posY, gate) plus the settlement's model moved in the map scene copy. The party navmesh is
 not changed, so put a settlement where `worldmap.at` reports land (Plain, Forest ...).
 
+The map scene copy carries `TileSets/WorldMap.gts` (4 MB): the engine opens the first .gts in the module's own
+`SceneObj/Main_map/TileSets`, and this copy's page names lead to SandBox's 2.1 GB of pages, by a path relative to
+`<game>/Modules/<module>`. A module installed elsewhere (a Steam Workshop folder) needs that path made for its own place.
+
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:
 

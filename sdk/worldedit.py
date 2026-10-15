@@ -223,10 +223,33 @@ def map_flora(edits):
     return d, int((np.abs(shift) > 1e-3).sum())
 
 
-def write_map_scene(edits, project, link_tilesets=True, dry=False):
+# The map's tile set (its colours) is opened from <module>/SceneObj/Main_map/TileSets: the engine takes the first .gts file
+# there, whatever vista_tileset says (bl2_re JOURNAL 2026-10-14). The .gts names its 8 page files by paths relative to its own
+# folder (UTF-16 slots of 0x218 bytes from 0xAAD38), so a 4 MB copy whose names point back at SandBox's pages is enough.
+GTS_PAGES_AT, GTS_PAGE_SLOT, GTS_NAME_FIELD = 0xAAD38, 0x218, 0x200   # a slot: the name (256 UTF-16), then u32, 16-byte page checksum, u32
+SANDBOX_PAGES = "../../../../SandBox/SceneObj/Main_map/TileSets/pages/"   # from <game>/Modules/<module>/SceneObj/Main_map/TileSets
+
+
+def tileset_pointer(pages_prefix=SANDBOX_PAGES):
+    """SandBox's WorldMap.gts with its page names pointing at SandBox's pages (bytes)."""
+    b = bytearray(open(os.path.join(source_dir(), "TileSets", "WorldMap.gts"), "rb").read())
+    for k in range(32):
+        o = GTS_PAGES_AT + k * GTS_PAGE_SLOT
+        name = bytes(b[o:o + GTS_PAGE_SLOT]).decode("utf-16-le", "replace").split("\0")[0]
+        if not name.startswith("pages/"): break
+        new = (pages_prefix + name[len("pages/"):]).encode("utf-16-le")
+        if len(new) + 2 > GTS_NAME_FIELD: raise ValueError("page path too long for its slot: %s" % new.decode("utf-16-le"))
+        b[o:o + GTS_NAME_FIELD] = new + bytes(GTS_NAME_FIELD - len(new))   # the checksum after the name stays
+    else: raise ValueError("more page names than expected in WorldMap.gts")
+    if k == 0: raise ValueError("no page names at the expected place in WorldMap.gts (another game version?)")
+    return bytes(b)
+
+
+def write_map_scene(edits, project, tileset="pointer", dry=False):
     """<project>/SceneObj/Main_map: the shipped map scene as is, with its flora moved by the edits (so trees stand on raised
-    ground). The game then reads this folder's scene.xscene and flora.bin. The tile set is read from the scene's own folder: a
-    TileSets directory junction to SandBox's keeps the map's colours (without it the ground is drawn dark)."""
+    ground) and settlements moved. The game then reads this folder's scene.xscene, flora.bin and tile set. tileset: "pointer"
+    (a 4 MB WorldMap.gts whose pages are SandBox's, the default: shippable), "link" (a directory junction to SandBox's
+    TileSets) or "none" (the map's ground is then drawn without its colours)."""
     import flora
     src = source_dir(); dst = os.path.join(project, "SceneObj", "Main_map")
     d, moved = map_flora(edits)
@@ -241,10 +264,19 @@ def write_map_scene(edits, project, link_tilesets=True, dry=False):
     flora.write(dst, d)
     moves = apply_moves(edits, os.path.join(src, "scene.xscene"), os.path.join(dst, "scene.xscene"))
     ts = os.path.join(dst, "TileSets")
-    if link_tilesets and not os.path.lexists(ts):
+    if tileset == "link" and not os.path.lexists(ts):
         r = subprocess.run(["cmd", "/c", "mklink", "/J", ts, os.path.join(src, "TileSets")], capture_output=True, text=True)
         if r.returncode != 0: raise ValueError("could not link TileSets: " + (r.stdout + r.stderr).strip())
-    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "tilesets": "linked" if os.path.lexists(ts) else "none"}
+    elif tileset == "pointer":
+        if os.path.lexists(ts) and _is_junction(ts): os.rmdir(ts)          # never write through a link into SandBox's folder
+        os.makedirs(ts, exist_ok=True)
+        with open(os.path.join(ts, "WorldMap.gts"), "wb") as f: f.write(tileset_pointer())
+    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "tilesets": tileset}
+
+
+def _is_junction(path):
+    try: return os.path.islink(path) or bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+    except OSError: return False
 
 
 def _entity_chain(el, name, chain=()):
