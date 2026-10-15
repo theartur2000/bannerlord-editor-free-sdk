@@ -716,6 +716,86 @@ def flora_round_trip_and_new_instances():
     else: raise AssertionError("a size field that disagrees with the file was accepted")
 
 
+@test
+def prt_png_codec():
+    import prt, zlib
+    rng = np.random.default_rng(7)
+    imgs = [rng.integers(0, 65536, (13, 21), dtype=np.uint16), np.full((51, 38), 1999, np.uint16),
+            np.cumsum(rng.integers(0, 40, (40, 90)), axis=1).astype(np.uint16), rng.integers(0, 4000, (113, 85), dtype=np.uint16)]
+    pngs = prt.png_encode16_many(imgs)
+    for img, p in zip(imgs, pngs):
+        ch = prt.png_chunks(p); tags = [t for t, _ in ch]
+        assert tags[0] == b"IHDR" and tags[1] == b"pHYs" and tags[-1] == b"IEND" and ch[1][1] == prt.PHYS_72DPI
+        assert all(len(b) == 8192 for t, b in ch[2:-2]) and set(tags[2:-1]) == {b"IDAT"}
+        z = b"".join(b for t, b in ch if t == b"IDAT"); raw = zlib.decompress(z); h, w = img.shape
+        assert {raw[r * (2 * w + 1)] for r in range(h)} <= {0, 1, 4}                # libpng offers None, Sub and Paeth only
+        assert ((z[0] << 8) | z[1]) % 31 == 0 and (z[0] >> 4) <= 7
+        if len(raw) <= 16384: assert (1 << ((z[0] >> 4) + 8)) >= len(raw) and (1 << ((z[0] >> 4) + 7)) < len(raw)   # smallest window
+        assert p == prt.png_encode16(img)
+    for pillow in (True, False):
+        back = prt.png_decode16_many(pngs, pillow=pillow)
+        assert all(b.dtype == np.uint16 and np.array_equal(a, b) for a, b in zip(imgs, back))
+
+
+@test
+def prt_entry_round_trip():
+    import prt
+    rng = np.random.default_rng(3); dims = (5, 4, 3); nx, ny, nz = dims
+    cells = np.sort(rng.choice(nx * ny * nz, 23, replace=False)); n = len(cells)
+    xyz = prt.cell_xyz(cells, dims); assert np.array_equal(prt.cell_index(xyz[:, 0], xyz[:, 1], xyz[:, 2], dims), cells)
+    pos = 10.0 + xyz * [2.0, 2.0, 2.5] + rng.random((n, 3))
+    sky = rng.random((n, 6)).astype(np.float32); bounce = rng.uniform(-2.5, 2.5, (n, 6, 4, 3)).astype(np.float32)
+    point = rng.uniform(0, 3.0, (n, 6, 3)).astype(np.float32); occ = rng.random(n) < 0.3
+    e = prt.build_entry(dims, (2.0, 2.0, 2.5), (10.0, 10.0, 0.0), cells, pos, sky, bounce, point, occ)
+    assert e["bounds_max"] == (20.0, 18.0, 7.5) and np.isclose(e["point_max"], point.max())
+    d = dict(magic=b"PRT4", entries=[dict(e, name="level_1 "), dict(prt.neutral((0, 0, 0), (4, 4, 5), (2.0, 2.5))["entries"][0], name="")])
+    raw = prt.pack(d); back = prt.parse(raw)
+    assert [x["name"] for x in back["entries"]] == ["level_1 ", ""] and prt.pack(back) == raw
+    e2 = prt.parse_entry(back["entries"][0]["blob"]); assert prt.pack_entry(e2) == back["entries"][0]["blob"]
+    P = prt.probes(e2)
+    assert np.array_equal(P["cells"], cells) and np.array_equal(P["occluded"], occ) and np.allclose(P["position"], pos, atol=1e-4)
+    assert np.all(np.abs(P["sky"] - sky) <= 1.0 / 999 + 1e-6) and np.all(P["sky"] <= sky + 1e-6)          # truncated, one step at most
+    clipped = np.clip(bounce, -2, 2); assert np.all(np.abs(P["bounce"] - clipped) <= 4.0 / 3999 + 1e-5)
+    assert np.all(np.abs(P["point"] - point) <= point.max() / prt.point_steps(point.max()) + 1e-5)
+    assert prt.pack_entry(prt.rebuild_entry(e2)) == back["entries"][0]["blob"]                            # mid-step values write the same integers
+    n2 = prt.parse_entry(back["entries"][1]["blob"]); Pn = prt.probes(n2)
+    assert n2["dims"] == (2, 2, 2) and n2["active"].all() and np.all(n2["sky"] == 999) and np.all(n2["bounce"] == 1999)
+    assert np.allclose(Pn["sky"], 1.0) and np.allclose(Pn["bounce"], 0.0, atol=1e-3) and np.all(Pn["point"] == 0)
+    legacy = b"PRT1" + bytes(range(40)); assert prt.pack(prt.parse(legacy)) == legacy
+    for bad in (raw[:-1], raw + b"\0"):
+        try: prt.parse(bad)
+        except (ValueError, struct.error): pass
+        else: raise AssertionError("a truncated or padded prt_data.bin was accepted")
+
+
+@test
+def prt_bake_ray_caster():
+    import prt_bake
+    rng = np.random.default_rng(5)
+    # random triangles: the grid walk finds the same nearest hits as testing every triangle
+    V = rng.uniform(-10, 10, (300, 3)); F = rng.integers(0, 300, (200, 3)); F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
+    rs = prt_bake.RayScene(V, F, box=((-5, -5, -5), (5, 5, 5)))
+    O = rng.uniform(-6, 6, (400, 3)); D = rng.normal(size=(400, 3)); D /= np.linalg.norm(D, axis=1, keepdims=True)
+    hit, t, tri, u, v = rs.cast(O, D)
+    a = V[F[:, 0]]; e1 = V[F[:, 1]] - a; e2 = V[F[:, 2]] - a; best = np.full(400, np.inf)
+    for k in range(len(F)):
+        tt, uu, vv, ok = prt_bake._intersect(O, D, np.broadcast_to(a[k], O.shape), np.broadcast_to(e1[k], O.shape), np.broadcast_to(e2[k], O.shape))
+        ok &= (tt > 0) & (tt <= prt_bake.MAX_DISTANCE); best = np.where(ok & (tt < best), tt, best)
+    assert np.array_equal(hit, np.isfinite(best)) and np.allclose(t[hit], best[hit], atol=1e-3)
+    # a large ground plane at z = 0, a probe 1 m above it, grey 0.5
+    G = np.array([[-900, -900, 0], [900, -900, 0], [900, 900, 0], [-900, 900, 0]], float); Fg = np.array([[0, 1, 2], [0, 2, 3]])
+    plane = prt_bake.RayScene(G, Fg, box=((-20, -20, -1), (20, 20, 5)))
+    sky, sh = prt_bake.bake_probes(plane, [[0.0, 0.0, 1.0]], rays=4000, albedo=0.5, seed=2)
+    assert abs(sky[0, 5] - 1.0) < 0.05 and abs(sky[0, 4]) < 0.01 and np.all(np.abs(sky[0, :4] - 0.5) < 0.05)
+    # straight down: every ray hits the plane once and leaves upward: Y00 = 2 albedo x 0.2820948, Y10 (z) = albedo x 0.48860252 x 4/3
+    assert abs(sh[0, 4, 0, 0] - 0.282) < 0.02 and abs(sh[0, 4, 2, 1] - 0.326) < 0.03 and np.all(np.abs(sh[0, 4, 1, :]) < 0.03)
+    # a closed box around the probe: no sky in any direction
+    box = np.array([[x, y, z] for z in (-1, 1) for y in (-1, 1) for x in (-1, 1)], float)
+    Fb = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+    sky_b, _ = prt_bake.bake_probes(prt_bake.RayScene(box, Fb), [[0.1, 0.2, 0.0]], rays=300)
+    assert np.all(sky_b == 0)
+
+
 def uuid_bytes(s):
     import uuid
     return uuid.UUID(s).bytes_le
