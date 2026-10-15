@@ -321,7 +321,7 @@ def main(argv=None):
             for x in info: print("  submesh %-28s material %-24s positions %d vertices %d triangles %d%s" % (x[0], x[1], x[2], x[3], x[4], " skinned" if x[5] else ""))
     elif cmd == "anim":
         for f in [x for x in a[1:] if x.lower().endswith(".fbx")]:
-            out, take, nk = tpac.write_anim_package(f, A, force)
+            out, take, nk = tpac.write_anim_package(f, A, force, name=opt("--name"))
             print("staged %s (animation %s, %d keys)" % (out, take, nk))
     elif cmd == "skeleton":
         import sdk_skeleton

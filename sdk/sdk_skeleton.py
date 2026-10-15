@@ -171,6 +171,26 @@ def _order(names, parents):
     m = {o: k for k, o in enumerate(order)}
     return [names[i] for i in order], [m[parents[i]] if parents[i] >= 0 else -1 for i in order], order
 
+def limb_order(nodes):
+    """The FBX's bones (LimbNode models, nubs named *notused left out) as model ids in skeleton order: parent first, file
+    order otherwise. A bone's index in this list is its index in the skeleton, the skin weights and the animation channels."""
+    ids = [mid for mid, m in nodes.models.items() if m[1][2] == "LimbNode" and not nodes.name(mid).endswith("notused")]
+    parents = []
+    for mid in ids:
+        p = nodes.parent.get(mid)
+        while p is not None and p not in ids: p = nodes.parent.get(p)
+        parents.append(ids.index(p) if p is not None else -1)
+    names, par, order = _order([nodes.name(m) for m in ids], parents)
+    return [ids[i] for i in order]
+
+
+def bip01_index(name):
+    """The index in a bip01_<name>_<index> bone name, or None for other names."""
+    if not name.startswith("bip01_"): return None
+    tail = name.rsplit("_", 1)[1]
+    return int(tail) if tail.isdigit() else None
+
+
 def bones_from_fbx(path):
     """LimbNode bones of an FBX at their bind (property) pose, fully evaluated transforms, Z-up as the mesh import."""
     import sdk_mesh

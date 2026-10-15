@@ -380,9 +380,10 @@ def asset_skeleton(a):
 
 
 @command("asset.anim", "Stages a skeletal animation from a single-take FBX; with --skeleton it is attached to that skeleton (the owner the game checks).",
-         [P("fbx", required=True), P("skeleton", help="a skeleton name, staged or installed (default: the human skeleton)"), STAGE, P("force", "bool")], writes=True)
+         [P("fbx", required=True), P("skeleton", help="a skeleton name, staged or installed (default: the human skeleton)"),
+          P("name", help="the animation's name (default: the take's; the file's when the take is an exporter's generic Scene, Take 001 ...)"), STAGE, P("force", "bool")], writes=True)
 def asset_anim(a):
-    res = _stage_cmd(a, ["anim", a["fbx"]] + _opts(a, ("stage",)) + (["--force"] if a.get("force") else []))
+    res = _stage_cmd(a, ["anim", a["fbx"]] + _opts(a, ("name", "stage")) + (["--force"] if a.get("force") else []))
     if a.get("dry"): return res
     take = next((m.group(1) for line in LOG for m in [re.search(r"\(animation (.+?), \d+ keys\)", line)] if m), None)
     res["animation"] = take

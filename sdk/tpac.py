@@ -1263,7 +1263,7 @@ def _mat_quat(m):
 
 def fbx_take(path):
     """Keys of a single-take skeleton FBX as the editor stores them: one key per frame at the file's frame rate, per
-    bone (bip01_<name>_<index>, index = channel) the rotation of parent bone^-1 x bone from fully evaluated node
+    bone (bip01_<name>_<index>, index = channel; for other names the bone's place in the skeleton) the rotation of parent bone^-1 x bone from fully evaluated node
     transforms (rotation order, pre/post rotation, pivots, offsets: sdk_mesh.FbxNodes, like the importer's
     EvaluateGlobalTransform), the pelvis in its global frame; root = pelvis global position minus its first frame.
     Returns (take name, rotations [(times, quats)] by bone index, root (times, x,y,z,0 rows))."""
@@ -1295,10 +1295,13 @@ def fbx_take(path):
             kv = np.array([c for c in cv[2] if c[0] == "KeyValueFloat"][0][1][0])
             out.append(np.interp(tt, kt, kv))
         return np.stack(out, 1)
+    import sdk_skeleton
     bones = {}
     for mid, m in models.items():
         nm = m[1][1].split("\x00")[0]
-        if nm.startswith("bip01_") and not nm.endswith("notused"): bones[int(nm.rsplit("_", 1)[1])] = mid
+        if nm.startswith("bip01_") and not nm.endswith("notused") and sdk_skeleton.bip01_index(nm) is not None: bones[sdk_skeleton.bip01_index(nm)] = mid
+    if not bones:                       # any other bone names: the channel is the bone's place in the skeleton (sdk_skeleton.limb_order)
+        bones = dict(enumerate(sdk_skeleton.limb_order(nodes)))
     if sorted(bones) != list(range(len(bones))): raise ValueError("bone indices not 0..n-1")
     times = np.arange(frames, dtype=float)
     anim = [mid for mid in models if any(cn_of.get((mid, p)) for p in ("Lcl Translation", "Lcl Rotation", "Lcl Scaling"))]
@@ -1345,14 +1348,19 @@ def pack_resources(package, resources):
     assert len(head) + len(body) == meta
     return head + body + data
 
-def write_anim_package(fbx, out_dir=None, force=False, ids=None, owner=HUMAN_SKELETON):
+GENERIC_TAKES = ("scene", "take 001", "mixamo.com", "animation", "default take")   # take names exporters give every file
+
+
+def write_anim_package(fbx, out_dir=None, force=False, ids=None, owner=HUMAN_SKELETON, name=None):
     """<fbx name>_geo.tpac with the FBX's single take as a skeleton animation (owner skeleton set), as the editor's
     import writes it. ids = (package, import source, animation) guids to reuse; else the installed or staged package
-    of that name gives them, else fresh ones. Returns (path, take name, key count)."""
+    of that name gives them, else fresh ones. name: the animation's name (default the take's, or the file's when the take has
+    an exporter's generic name such as Blender's "Scene"). Returns (path, animation name, key count)."""
     base = os.path.splitext(os.path.basename(fbx))[0]
     out = os.path.join(out_dir or ASSETS, base + "_geo.tpac")
     if os.path.exists(out) and not force: raise FileExistsError(out + " exists (use --force)")
     take, rot, root = fbx_take(fbx)
+    aname = name or (base if take.lower() in GENERIC_TAKES else take)
     if ids is None:
         ids = (uuid.uuid4().bytes, uuid.uuid4().bytes, uuid.uuid4().bytes)
         for p in (out, os.path.join(ASSETS, base + "_geo.tpac")):
@@ -1369,10 +1377,10 @@ def write_anim_package(fbx, out_dir=None, force=False, ids=None, owner=HUMAN_SKE
     struct.pack_into("<I", anim_rec, 0, len(anim_rec) - 8)
     settings = ANIM_SETTINGS_HEAD + struct.pack("<I", 1) + _S(take) + b"\0"
     data = pack_resources(package, [(IMPORT_TYPE, src, 0, base + ".fbx", bytes(src_rec), [(ANIM_SETTINGS, settings)]),
-                                    (ANIM_TYPE, anim, 0, take, bytes(anim_rec), [(ANIM_DATA, pack_anim_blob(take, rot, root))])])
+                                    (ANIM_TYPE, anim, 0, aname, bytes(anim_rec), [(ANIM_DATA, pack_anim_blob(aname, rot, root))])])
     if out_dir: os.makedirs(out_dir, exist_ok=True)
     open(out, "wb").write(data)
-    return out, take, len(rot[0][0])
+    return out, aname, len(rot[0][0])
 
 def write_anim_takes(base, takes, owner, out_dir=None, force=False, src_hash=bytes(8)):
     """<base>_geo.tpac with several skeleton animations (a multi-take import), keys given directly.

@@ -157,6 +157,10 @@ def read_fbx(path):
         if a in geoms and b in models: g2m[a] = b
         if byid.get(a, ("",))[0] == "Material" and b in models: mats.setdefault(b, []).append(byid[a][1][1].split("\x00")[0])
         links.setdefault(b, []).append(a)
+    import sdk_skeleton
+    order = {mid: i for i, mid in enumerate(sdk_skeleton.limb_order(nodes))}   # bone index by skeleton order
+    named = [sdk_skeleton.bip01_index(x[1][1].split("\x00")[0]) for x in models.values() if x[1][1].startswith("bip01_")]
+    use_names = bool(named) and all(i is not None for i in named)   # a bip01_<name>_<index> rig: the index is in the name
     out = []
     for gid, g in geoms.items():
         m = models[g2m[gid]]
@@ -170,11 +174,10 @@ def read_fbx(path):
                     dd = {x[0]: x[1][0] for x in cn[2] if x[0] in ("Indexes", "Weights")}
                     if not bones or "Indexes" not in dd: continue
                     bname = models[bones[0]][1][1].split("\x00")[0]
-                    try: bi = int(bname.rsplit("_", 1)[1])
-                    except ValueError: raise ValueError("bone %s: expected bip01_<name>_<index>" % bname)
+                    bi = sdk_skeleton.bip01_index(bname) if use_names else order.get(bones[0])
+                    if bi is None: raise ValueError("bone %s is not a bone of the skeleton (LimbNode)" % bname)
                     for i, w in zip(dd["Indexes"], dd["Weights"]): weights[i].append((bi, w))
-        idx = [x[1][1].split("\x00")[0].rsplit("_", 1)[1] for x in models.values() if x[1][1].startswith("bip01_")]
-        nbones = 1 + max([int(i) for i in idx if i.isdigit()] or [-1])
+        nbones = (1 + max(named)) if use_names else len(order)
         out.append(dict(name=m[1][1].split("\x00")[0], props=props70(m), M=nodes.global_(g2m[gid]) @ nodes.geometric(g2m[gid]), nbones=nbones, V=np.array(ch("Vertices"), float).reshape(-1, 3),
                         PVI=np.array(ch("PolygonVertexIndex")), normals=_layers(g, "LayerElementNormal", "NormalsIndex", "Normals"),
                         uvs=_layers(g, "LayerElementUV", "UVIndex", "UV"), colors=_layers(g, "LayerElementColor", "ColorIndex", "Colors"),
