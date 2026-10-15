@@ -167,6 +167,7 @@ def edits_field(edits, shape, cell):
     {"op": "bump", "x", "y", "radius", "height"}: a smooth rise (or dip) with a cosine profile."""
     dz = np.zeros(shape, np.float64)
     for e in edits:
+        if e.get("op", "bump") == "move": continue                  # settlement moves change no ground
         if e.get("op", "bump") != "bump": raise ValueError("unknown map edit %r" % e.get("op"))
         r = float(e["radius"]); x, y = float(e["x"]), float(e["y"])
         j0, j1 = max(0, int((y - r) / cell)), min(shape[0], int((y + r) / cell) + 2)
@@ -233,13 +234,70 @@ def write_map_scene(edits, project, link_tilesets=True, dry=False):
     os.makedirs(dst, exist_ok=True)
     for f in os.listdir(src):
         s = os.path.join(src, f); t = os.path.join(dst, f)
-        if f in ("TileSets", "flora.bin"): continue
+        if f in ("TileSets", "flora.bin", "scene.xscene"): continue
         if os.path.isdir(s):
             if not os.path.isdir(t): shutil.copytree(s, t)
         elif not os.path.isfile(t) or os.path.getsize(t) != os.path.getsize(s): shutil.copyfile(s, t)
     flora.write(dst, d)
+    moves = apply_moves(edits, os.path.join(src, "scene.xscene"), os.path.join(dst, "scene.xscene"))
     ts = os.path.join(dst, "TileSets")
     if link_tilesets and not os.path.lexists(ts):
         r = subprocess.run(["cmd", "/c", "mklink", "/J", ts, os.path.join(src, "TileSets")], capture_output=True, text=True)
         if r.returncode != 0: raise ValueError("could not link TileSets: " + (r.stdout + r.stderr).strip())
-    return {"map_scene": dst, "trees_moved": moved, "tilesets": "linked" if os.path.lexists(ts) else "none"}
+    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "tilesets": "linked" if os.path.lexists(ts) else "none"}
+
+
+def _entity_chain(el, name, chain=()):
+    """The map scene's entities from the top down to the one named `name` (scene.Entity list), or None."""
+    import scene
+    for c in el.elements("game_entity"):
+        e = scene.Entity(c)
+        if c.get("name") == name: return list(chain) + [e]
+        ch = c.find("children")
+        if ch is not None:
+            r = _entity_chain(ch, name, tuple(chain) + (e,))
+            if r: return r
+    return None
+
+
+def settlement_entity(scene_doc, sid):
+    """(entity, global position) of a settlement's model in the map scene: the entity named after the settlement id, which
+    hangs under an unrotated, unscaled group (its global position is the settlement's posX, posY)."""
+    chain = _entity_chain(scene_doc.entities_element(), sid)
+    if chain is None: raise ValueError("no entity named %s in the map scene" % sid)
+    for p in chain[:-1]:
+        if any(abs(r) > 1e-6 for r in (p.rotation or (0, 0, 0))) or (p.scale and any(abs(s - 1) > 1e-6 for s in p.scale)):
+            raise ValueError("%s hangs under a turned or scaled entity (%s): not handled" % (sid, p.el.get("name")))
+    pos = np.sum([np.asarray(e.position or (0, 0, 0), np.float64) for e in chain], axis=0)
+    return chain[-1], pos
+
+
+def ground_at(edits, x, y):
+    """The map's ground height at x, y after the edits."""
+    return height_at(edits, x, y)[1]
+
+
+def apply_moves(edits, src_scene, dst_scene):
+    """Writes the map scene with the settlement models of the edits' "move" entries at their new places (the same height above
+    the ground as before). Returns [{id, from, to}]."""
+    import scene
+    doc = scene.load(src_scene); done = []
+    for e in edits:
+        if e.get("op") != "move": continue
+        ent, pos = settlement_entity(doc, e["id"])
+        lift = pos[2] - ground_at([], pos[0], pos[1])
+        new = np.array([e["x"], e["y"], ground_at(edits, e["x"], e["y"]) + lift])
+        ent.position = tuple(np.asarray(ent.position, np.float64) + new - pos)
+        done.append({"id": e["id"], "from": [round(float(v), 3) for v in pos], "to": [round(float(v), 3) for v in new]})
+    doc.save(dst_scene)
+    return done
+
+
+def settlement_data(sid):
+    """posX, posY, gate_posX, gate_posY of a settlement in SandBox's settlements.xml (floats; gate None when absent)."""
+    import re, config
+    t = open(os.path.join(config.MODULES, "SandBox", "ModuleData", "settlements.xml"), encoding="utf-8").read()
+    m = re.search(r'<Settlement\s[^>]*?id="%s"[^>]*>' % re.escape(sid), t, re.S)
+    if not m: raise ValueError("no settlement %s in SandBox's settlements.xml" % sid)
+    g = lambda k: (lambda r: float(r.group(1)) if r else None)(re.search(r'\s%s="([-0-9.]+)"' % k, m.group(0)))
+    return g("posX"), g("posY"), g("gate_posX"), g("gate_posY")

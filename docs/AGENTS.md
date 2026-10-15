@@ -119,6 +119,13 @@ The map's heights stay within the shipped range (about -0.7 to 23); the command 
 `--trees` the map's trees keep their heights, so raised ground buries them; with it the map scene is written into the
 project (`SceneObj/Main_map`, flora moved, `bl deploy` installs it) and later bumps keep it up to date.
 
+```powershell
+bl worldmap.move --id town_S1 --x 375 --y 530     # position, gate and the town's model; check the spot with bl worldmap.at
+```
+
+A move is a data patch (posX, posY, gate) plus the settlement's model moved in the map scene copy. The party navmesh is
+not changed, so put a settlement where `worldmap.at` reports land (Plain, Forest ...).
+
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:
 

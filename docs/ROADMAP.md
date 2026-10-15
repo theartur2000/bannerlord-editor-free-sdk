@@ -134,7 +134,7 @@ Start with B1 to B2: they are small and already make procedural level work possi
 | B5 | done by decoding: `sdk/navmesh.py` reads and writes versions 7 to 9 (485 shipped files); a grid navmesh over walkable ground is enough for 200 against 200 | Polygon navmesh with region ids (`navmesh="polygons"`), verified in a 200 against 200 battle.
 | B6 | partly: trees, grass and bushes through the template's flora and detail layers, water by level, no light bake needed for battlefields. `flora.bin` decoded (`sdk/flora.py`: all 722 shipped files, 2.77 million instances, re-encode byte-identical) |
 | B7 | edited copies of shipped scenes, verified in game: battle, siege and village as Custom Battles (`scene.register --kind`), interiors (lord's hall) in a campaign through `bl live indoor ... scene=`. Generated (not copied) sieges, towns and hideouts are not written |
-| B8 | campaign data changes through XSLT patches (`data.set`, verified in game: a renamed town); map heights through the two height textures the shipped map reads (`main_map_physics_heightmap`, `world_map_heightmap`), overridden by name (`bl worldmap.bump`, verified in game). `--trees` writes the map scene into the module with its trees moved onto the new ground (verified in game; the scene's tile set needs a TileSets link next to it). Settlements and the party navmesh are not edited yet. Read access: `sdk/worldmap.py` |
+| B8 | campaign data changes through XSLT patches (`data.set`, verified in game: a renamed town); map heights through the two height textures the shipped map reads (`main_map_physics_heightmap`, `world_map_heightmap`), overridden by name (`bl worldmap.bump`, verified in game). `--trees` writes the map scene into the module with its trees moved onto the new ground (verified in game; the scene's tile set needs a TileSets link next to it). `worldmap.move` moves a settlement (data, gate and model; verified in game: the town shows at its new place and can be entered). The party navmesh is not edited yet. Read access: `sdk/worldmap.py` |
 
 The C# runtime library decided on in section 8 exists as the generator inside the GenFields module
 (`mod/GenFields/src/gen` of [Procedural Battlefields](https://github.com/theartur2000/bannerlord-procedural-battlefields)): a new field for every campaign battle in under two
@@ -160,7 +160,7 @@ Beyond the plan: `sdk/meshread.py` (geometry of shipped meshes), `sdk/rockfit.py
 
 | Item | State |
 |---|---|
-| One CLI | done: `sdk/bl.py`, 49 commands, one JSON object per call, `--dry` on everything that writes |
+| One CLI | done: `sdk/bl.py`, 50 commands, one JSON object per call, `--dry` on everything that writes |
 | MCP server | done: `sdk/mcp_server.py`, the same registry over stdio, no dependencies |
 | Bridge module | done and run in game: a file-based command channel (`Bridge.cs` in a scaffolded project, `bl live`): state, ground, ray cast, teleport, look, screenshot, spawn, remove, say, quit |
 | Project layout and `bl new` | done: a scaffolded project builds, deploys, loads, and its test driver runs a battle unattended (verified in game) |

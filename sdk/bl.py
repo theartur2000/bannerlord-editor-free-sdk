@@ -735,6 +735,26 @@ def worldmap_bump(a):
     return res
 
 
+@command("worldmap.move", "Moves a settlement on the campaign map: its position and gate (a data patch) and its model in the map scene, kept with the map edits.",
+         [P("id", help="the settlement id, for example town_S1", required=True), P("x", "number", required=True), P("y", "number", required=True)], writes=True)
+def worldmap_move(a):
+    import json, datapatch, worldedit
+    d, pj = _need_project(); c = _cfg(); c.require_game()
+    folder = os.path.join(d, "worldmap"); store = os.path.join(folder, "edits.json")
+    edits = json.load(open(store)) if os.path.isfile(store) else []
+    try: px, py, gx, gy = worldedit.settlement_data(a["id"])
+    except ValueError as e: raise BlError(str(e))
+    edits = [e for e in edits if not (e.get("op") == "move" and e.get("id") == a["id"])] + [{"op": "move", "id": a["id"], "x": a["x"], "y": a["y"]}]
+    attrs = {"posX": "%.3f" % a["x"], "posY": "%.3f" % a["y"]}
+    if gx is not None: attrs.update(gate_posX="%.3f" % (gx + a["x"] - px), gate_posY="%.3f" % (gy + a["y"] - py))
+    if a.get("dry"): return {"would_patch": attrs, "would_write": os.path.join(d, "SceneObj", "Main_map")}
+    datapatch.set_attrs(d, pj["module"], "Settlements", "Settlement", a["id"], attrs)
+    os.makedirs(folder, exist_ok=True); json.dump(edits, open(store, "w"), indent=1)
+    res = worldedit.write_map_scene(edits, d)
+    res.update(settlement=a["id"], data=attrs, note="`bl deploy` installs the map scene and the patch; a new campaign shows the move. The party navmesh is not changed: put a settlement on land parties reach")
+    return res
+
+
 @command("data.set", "Changes attributes of an object the game (or another module) defines: a settlement, an item, a troop, a kingdom ... as an XSLT patch in the project.",
          [P("kind", help="the data kind (the root element): Settlements, Items, NPCCharacters, Kingdoms, Clans, Cultures ...", required=True),
           P("element", help="the object's element: Settlement, Item, NPCCharacter, Kingdom ...", required=True), P("id", help="the object's id", required=True),
