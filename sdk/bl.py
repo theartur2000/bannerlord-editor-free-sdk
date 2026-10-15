@@ -698,7 +698,8 @@ def prefab_add(a):
 @command("worldmap.bump", "Raises or lowers the campaign map's ground around a point: kept in the project (worldmap/edits.json) and staged as the map's two height textures for `bl install`.",
          [P("x", "number", help="map position (see `bl live settlement` for a settlement's)"), P("y", "number"), P("radius", "number", help="in map units"),
           P("height", "number", help="map units; negative for a dip"), P("clear", "bool", help="drop every edit (the textures are then removed from the stage)"),
-          P("list", "bool", help="only list the edits")], writes=True)
+          P("list", "bool", help="only list the edits"),
+          P("trees", "bool", help="also write the map scene into the project (SceneObj/Main_map) with the trees moved onto the new ground; kept up to date by later bumps once there")], writes=True)
 def worldmap_bump(a):
     import json, worldedit
     d, pj = _need_project(); c = _cfg(); c.require_game()
@@ -712,6 +713,11 @@ def worldmap_bump(a):
         for p_ in gone:
             if os.path.isfile(p_): os.remove(p_)
         if os.path.isfile(store): os.remove(store)
+        scene_copy = os.path.join(d, "SceneObj", "Main_map")
+        if os.path.isdir(scene_copy):                      # the TileSets junction first, so SandBox's tiles are never touched
+            ts = os.path.join(scene_copy, "TileSets")
+            if _is_link(ts): os.rmdir(ts)
+            shutil.rmtree(scene_copy); gone.append(scene_copy)
         return {"cleared": len(edits), "unstaged": gone, "note": "textures already installed stay until `bl revert` or a new install over them"}
     for k in ("x", "y", "radius", "height"):
         if a.get(k) is None: raise BlError("--%s is needed" % k)
@@ -722,7 +728,10 @@ def worldmap_bump(a):
         res.update(height_shipped=round(before, 3), height_after=round(after, 3)); return res
     res = worldedit.write_height_textures(edits + [e], os.path.join(stage, "Assets"), os.path.join(stage, "RuntimeDataCache"), png_dir=folder)
     os.makedirs(folder, exist_ok=True); json.dump(edits + [e], open(store, "w"), indent=1)
-    res.update(height_shipped=round(before, 3), height_after=round(after, 3), note="`bl install` puts the textures in the module; a new campaign or a loaded save shows the change")
+    if a.get("trees") or os.path.isdir(os.path.join(d, "SceneObj", "Main_map")):
+        res["map_scene"] = worldedit.write_map_scene(edits + [e], d)
+    res.update(height_shipped=round(before, 3), height_after=round(after, 3),
+               note="`bl install` puts the textures in the module" + (", `bl deploy` the map scene" if "map_scene" in res else "") + "; a new campaign or a loaded save shows the change")
     return res
 
 

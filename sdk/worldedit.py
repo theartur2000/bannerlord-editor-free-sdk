@@ -209,3 +209,37 @@ def height_at(edits, x, y):
     info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
     j, i = int(round(y / cell)), int(round(x / cell))
     before = float(z[j, i]); return before, before + float(edits_field(edits, z.shape, cell)[j, i])
+
+
+def map_flora(edits):
+    """The shipped map's flora (flora.py dict) with every tree and plant moved up or down by the edits' change under it."""
+    import flora
+    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    dz = edits_field(edits, z.shape, cell)
+    d = flora.read(source_dir()); P = flora.positions(d)
+    j = np.clip(np.rint(P[:, 1] / cell).astype(int), 0, z.shape[0] - 1); i = np.clip(np.rint(P[:, 0] / cell).astype(int), 0, z.shape[1] - 1)
+    shift = dz[j, i]; d["rec"]["m"][:, 3, 2] += shift.astype(np.float32)
+    return d, int((np.abs(shift) > 1e-3).sum())
+
+
+def write_map_scene(edits, project, link_tilesets=True, dry=False):
+    """<project>/SceneObj/Main_map: the shipped map scene as is, with its flora moved by the edits (so trees stand on raised
+    ground). The game then reads this folder's scene.xscene and flora.bin. The tile set is read from the scene's own folder: a
+    TileSets directory junction to SandBox's keeps the map's colours (without it the ground is drawn dark)."""
+    import flora
+    src = source_dir(); dst = os.path.join(project, "SceneObj", "Main_map")
+    d, moved = map_flora(edits)
+    if dry: return {"map_scene": dst, "trees_moved": moved}
+    os.makedirs(dst, exist_ok=True)
+    for f in os.listdir(src):
+        s = os.path.join(src, f); t = os.path.join(dst, f)
+        if f in ("TileSets", "flora.bin"): continue
+        if os.path.isdir(s):
+            if not os.path.isdir(t): shutil.copytree(s, t)
+        elif not os.path.isfile(t) or os.path.getsize(t) != os.path.getsize(s): shutil.copyfile(s, t)
+    flora.write(dst, d)
+    ts = os.path.join(dst, "TileSets")
+    if link_tilesets and not os.path.lexists(ts):
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", ts, os.path.join(src, "TileSets")], capture_output=True, text=True)
+        if r.returncode != 0: raise ValueError("could not link TileSets: " + (r.stdout + r.stderr).strip())
+    return {"map_scene": dst, "trees_moved": moved, "tilesets": "linked" if os.path.lexists(ts) else "none"}

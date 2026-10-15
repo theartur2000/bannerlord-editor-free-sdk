@@ -702,6 +702,20 @@ def cloth_flag_mesh_carries_flags_clothing_and_cook():
     else: raise AssertionError("a cloth submesh without a simulated vertex was written")
 
 
+@test
+def flora_round_trip_and_new_instances():
+    import flora
+    empty = flora.pack(dict(names=[], rec=np.zeros(0, flora.REC)))
+    assert empty == b"FLR2" + struct.pack("<II", 4, 0) and flora.parse(empty)["names"] == []
+    a = flora.instance("map_pine_c", 10.0, 20.0, 3.5, yaw_deg=90, scale=2.0); b = flora.instance("bush_a", -1.0, 0.5, 0.25)
+    d = dict(names=[a[0], b[0]], rec=np.array([a[1], b[1]], flora.REC)); raw = flora.pack(d); back = flora.parse(raw)
+    assert flora.pack(back) == raw and back["names"] == ["map_pine_c", "bush_a"] and len(raw) == 12 + 2 * (4 + 84) + len("map_pine_c") + len("bush_a")
+    assert np.allclose(flora.positions(back), [[10, 20, 3.5], [-1, 0.5, 0.25]]) and np.allclose(back["rec"]["m"][0, :3, :3], [[0, 2, 0], [-2, 0, 0], [0, 0, 2]], atol=1e-6)
+    try: flora.parse(raw + b"\0")
+    except ValueError: pass
+    else: raise AssertionError("a size field that disagrees with the file was accepted")
+
+
 def uuid_bytes(s):
     import uuid
     return uuid.UUID(s).bytes_le

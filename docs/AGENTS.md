@@ -115,8 +115,9 @@ bl install                                                   # then a new campai
 bl live mapheight --values x=374,y=548                       # the party's ground there
 ```
 
-The map's heights stay within the shipped range (about -0.7 to 23); the command reports clipped pixels. Map trees keep
-their heights, so raised ground buries them.
+The map's heights stay within the shipped range (about -0.7 to 23); the command reports clipped pixels. Without
+`--trees` the map's trees keep their heights, so raised ground buries them; with it the map scene is written into the
+project (`SceneObj/Main_map`, flora moved, `bl deploy` installs it) and later bumps keep it up to date.
 
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:
