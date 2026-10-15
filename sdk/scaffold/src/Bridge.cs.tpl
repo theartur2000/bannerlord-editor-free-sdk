@@ -34,6 +34,12 @@
 //                                          call enters the settlement and answers entering=; call again to open the location
 //   sprite name=                           a UI sprite by name: size, category; loads the category and reports its sheets
 //   say text=                              show a message on screen
+//   play event= [x= y= z=]                 play a sound event by its path (event:/...): without x= y= as the player hears it (2D, UI
+//                                          sounds and music), with them at that position in the running mission or on the campaign
+//                                          map (z defaults to the ground). Answers with the event's index in the game's table (-1
+//                                          means the engine does not know the path: the module's bank or sound_event_data.xml is not
+//                                          loaded), whether it started, and how many sounds started this way are still playing
+//   stop                                   stop every sound `play` started (loops included)
 //   quit                                   quit the game
 // Compiled with the project; not yet run in the game from this template.
 using System;
@@ -56,6 +62,7 @@ namespace __MOD__
         static bool _checked, _on;
         static float _t;
         static readonly List<GameEntity> Spawned = new List<GameEntity>();
+        static readonly List<SoundEvent> Playing = new List<SoundEvent>();     // sounds `play` started with a position
 
         static string Dir => Path.Combine(SubModule.ModulePath, "bridge");
 
@@ -311,6 +318,43 @@ namespace __MOD__
                 }
                 case "say":
                     InformationManager.DisplayMessage(new InformationMessage(a.ContainsKey("text") ? a["text"] : ""));
+                    return r;
+                case "play":
+                {
+                    if (!a.ContainsKey("event")) throw new Exception("play needs event=");
+                    string ev = a["event"];
+                    int sid = SoundEvent.GetEventIdFromString(ev);
+                    r["event"] = ev; r["event_index"] = sid;
+                    if (sid < 0) throw new Exception("the engine has no sound event " + ev + " (is the bank listed in soundfiles.xml and the event in the module's sound_event_data.xml, both named by project.mbproj?)");
+                    for (int i = Playing.Count - 1; i >= 0; i--) if (!Playing[i].IsValid || !Playing[i].IsPlaying()) { Playing[i].Release(); Playing.RemoveAt(i); }
+                    Scene sc = m != null ? m.Scene : null;
+                    if (sc == null && TaleWorlds.CampaignSystem.Campaign.Current != null) sc = ((SandBox.MapScene)TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper).Scene;
+                    bool at = a.ContainsKey("x") || a.ContainsKey("y");
+                    SoundEvent se = SoundEvent.CreateEventFromString(ev, sc);
+                    if (at)
+                    {
+                        if (sc == null) throw new Exception("a sound at a position needs a mission or the campaign map; leave out x= y= to play it as a 2D sound");
+                        if (!se.IsValid) throw new Exception("the engine would not create " + ev);
+                        float px = Num(a, "x"), py = Num(a, "y");
+                        float pz = a.ContainsKey("z") ? Num(a, "z") : (m != null ? sc.GetGroundHeightAtPosition(new Vec3(px, py, 10000f)) : 0f);
+                        r["mode"] = "3D"; r["position"] = new[] { px, py, pz };
+                        r["started"] = se.PlayInPosition(new Vec3(px, py, pz));
+                        Playing.Add(se);
+                    }
+                    else
+                    {
+                        r["mode"] = "2D";
+                        if (se.IsValid) { r["started"] = se.Play(); Playing.Add(se); }          // kept, so `stop` ends a loop
+                        else r["started"] = SoundEvent.PlaySound2D(sid);                         // the game's own route for UI sounds
+                    }
+                    r["playing"] = Playing.Count;
+                    Log.Write("bridge play " + ev + " (index " + sid + ", " + r["mode"] + ")");
+                    return r;
+                }
+                case "stop":
+                    r["stopped"] = Playing.Count;
+                    foreach (SoundEvent se in Playing) { se.Stop(); se.Release(); }
+                    Playing.Clear();
                     return r;
                 case "quit":
                     if (AutoTest.On) AutoTest.Done();          // the end marker for the harness, then quit

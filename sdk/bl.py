@@ -199,6 +199,8 @@ def doctor(a):
     for lib in ("numpy", "PIL"):
         try: out[lib] = __import__(lib).__version__
         except ImportError: out[lib] = None
+    import sound
+    out["fmod_studio"] = sound.find_studio(); out["vgmstream"] = sound.find_vgmstream()   # only the sound.* commands use them
     problems = []
     if not out["game_found"]: problems.append("the game was not found: pass --game or set BANNERLORD_DIR")
     elif not out["version_matches"]: problems.append("game version %s: the SDK is tested on %s; run `bl compat`" % (gv, TESTED_GAME))
@@ -891,6 +893,93 @@ def scene_register(a):
     return {"listed": scaffold.register_scene(d, pj["module"], a["scene_id"], a.get("name"), a.get("terrain") or "Plain", bool(a.get("remove")), a.get("kind") or "battle")}
 
 
+# ---------------------------------------------------------------- sound (FMOD banks)
+
+def _sound_module():
+    d, pj = _need_project()
+    return d, pj["module"]
+
+
+def _sound_err(f, *args, **kw):
+    import sound
+    try: return f(*args, **kw)
+    except sound.SoundError as e: raise BlError(str(e), e.hint)
+
+
+@command("sound.add", "Records a sound event in the project (sounds.json): its WAV files, played at random, and the Native event its mixing is taken from. "
+         "An event path that is a Native path replaces that event; any other path is a new event. Copies the WAV files into the project (Sounds/src).",
+         [P("event", help="the event path, for example event:/mymod/ui/click, or event:/mission/combat/cut/med to replace a Native event", required=True),
+          P("wavs", "list", help="one or more WAV files (mono or stereo, any rate); several are picked from at random", required=True),
+          P("like", help="a Native event path to take the mixing from: bus, 2D/3D, parameters, loop or one-shot (`bl sound.list --native <text>` finds them). "
+            "A replaced event is mixed like itself; a new one like event:/mod/ui (2D, one-shot) unless this names another"),
+          P("loop", "bool", help="loop the sound (default: as the `like` event)")], writes=True)
+def sound_add(a):
+    import sound
+    d, mod = _sound_module()
+    res = _sound_err(sound.add_event, d, a["event"], [os.path.abspath(w) for w in a["wavs"]], a.get("like"), a.get("loop"), bool(a.get("dry")))
+    res["event"] = a["event"]
+    res["next"] = "`bl sound.build` makes the bank and stages it; `bl install` puts it in the module"
+    return res
+
+
+@command("sound.remove", "Takes a sound event out of the project (and its copied WAV files).", [P("event", required=True)], writes=True)
+def sound_remove(a):
+    import sound
+    d, mod = _sound_module()
+    return _sound_err(sound.remove_event, d, a["event"], bool(a.get("dry")))
+
+
+@command("sound.build", "Builds the module's FMOD bank from the project's sound events with FMOD Studio 2.02.27's command line (no Studio window) and stages it with "
+         "its ModuleData files (soundfiles.xml, <module>_sound_event_data.xml, project.mbproj) for `bl install`; checks the bank offline.",
+         [STAGE, P("decode", "int", help="how many samples of the bank to decode and compare with their WAV files (needs vgmstream-cli: BL_VGMSTREAM or the PATH)", default=4)], writes=True)
+def sound_build(a):
+    import sound
+    c = _cfg(); d, mod = _sound_module()
+    res = _sound_err(sound.build, d, mod, a.get("stage") or "work", bool(a.get("dry")), int(a.get("decode") or 0))
+    if not a.get("dry"):
+        res["next"] = ["bl install" + ("" if (a.get("stage") or "work") == "work" else " --stage " + a["stage"]), "bl live.enable, start the game, bl live play <event>"]
+    return res
+
+
+@command("sound.list", "The project's sound events with their build state; with --native a text: the Native sound events whose path contains it, with 2D/3D, "
+         "length, parameters and the sample-project event a clone takes its mixing from (to choose `like`).",
+         [P("native", help="words that Native event paths must contain, for example 'combat impact' or 'ui click'"), P("limit", "int", default=60), STAGE])
+def sound_list(a):
+    import sound
+    c = _cfg()
+    if a.get("native"): return _sound_err(sound.search_native, a["native"], int(a.get("limit") or 60))
+    d, mod = _sound_module(); spec = sound.load_spec(d)["events"]; native = sound.native_events()
+    man = {}
+    mp = os.path.join(sound.work_dir(mod), "manifest.json")
+    if os.path.isfile(mp):
+        with open(mp, encoding="utf-8") as f: man = {e["path"]: e for e in json.load(f)["events"]}
+    rows = []
+    for p, e in sorted(spec.items()):
+        r = {"event": p, "files": e["wavs"], "like": e.get("like"), "loop": e.get("loop"), "replaces_native": p in native if native else None}
+        if p in man: r.update(guid=man[p]["guid"], built_template=man[p]["template"])
+        rows.append(r)
+    stage = os.path.join(c.SDK_STAGE_DIR, a.get("stage") or "work", "Sounds", "PC", mod + ".bank")
+    inst = os.path.join(c.MODULE, "Sounds", "PC", mod + ".bank") if c.BANNERLORD_MODULE_DIR else None
+    return {"module": mod, "events": rows, "bank_staged": os.path.isfile(stage), "bank_installed": bool(inst and os.path.isfile(inst)),
+            "fmod_studio": sound.find_studio(), "vgmstream": sound.find_vgmstream(), "sample_project": sound.sample_project() is not None}
+
+
+@command("sound.info", "Offline checks of a built bank: format 0x8e/0x8c, samples and their Vorbis streams, every event's GUID and the samples it reaches, the mixer "
+         "objects it routes into, and with --decode N a decode of N samples compared with the WAV files. Plays nothing.",
+         [P("bank", help="a .bank file (default: the project's staged bank)"), P("events", help="the sound_event_data.xml that names the bank's events (default: the one beside it)"),
+          P("decode", "int", help="samples to decode and compare (needs vgmstream-cli)", default=0), STAGE])
+def sound_info(a):
+    import sound
+    c = _cfg(); d, mod = (None, None) if a.get("bank") else _sound_module()
+    stage = os.path.join(c.SDK_STAGE_DIR, a.get("stage") or "work")
+    bank = a.get("bank") or os.path.join(stage, "Sounds", "PC", mod + ".bank")
+    ev = a.get("events") or (None if a.get("bank") else os.path.join(stage, "ModuleData", sound.event_data_name(mod)))
+    sources = None
+    if d:
+        spec = sound.load_spec(d)["events"]; sources = {p: sound.event_files(d, e) for p, e in spec.items()}
+    return _sound_err(sound.info, bank, ev if ev and os.path.isfile(ev) else None, int(a.get("decode") or 0), sources)
+
+
 # ---------------------------------------------------------------- meshes
 
 @command("mesh.find", "Names of shipped meshes that contain a text (14,000 of them: rocks, trees, props, armour ...).", [P("text", required=True), P("limit", "int", default=60)])
@@ -1045,7 +1134,7 @@ def workshop_config(a):
 # ---------------------------------------------------------------- the running game
 
 @command("live", "Sends one command to the running game through the project's bridge (Bridge.cs) and returns the answer. "
-         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, navcache, indoor, sprite, say, quit.",
+         "Commands: ping, state, ground, raycast, teleport, look, screenshot, spawn, remove, animate, bone, settlement, mapheight, mapmove, navcache, indoor, sprite, say, play, stop, quit.",
          [P("cmd", help="the command", required=True), P("values", "list", help="key=value pairs, for example prefab=rock_cliff_b,x=600,y=640"),
           P("timeout", "number", default=10.0)])
 def live(a):
@@ -1153,8 +1242,10 @@ def parse(argv):
             else: args[k] = v
         else:
             free = [p for p in pos if p["name"] not in args]
+            if not free and pos and pos[-1]["kind"] == "list":      # the last positional may be a list: more values extend it
+                args[pos[-1]["name"]] = list(args[pos[-1]["name"]]) + [x for x in t.split(",") if x]; i += 1; continue
             if not free: raise BlError("%s: unexpected value %r" % (name, t), "it takes: " + ", ".join(("" if p["required"] else "--") + p["name"] for p in cmd["params"]))
-            args[free[0]["name"]] = t; i += 1
+            args[free[0]["name"]] = [x for x in t.split(",") if x] if free[0]["kind"] == "list" else t; i += 1
     for p in cmd["params"]:
         k = p["name"]
         if k not in args:

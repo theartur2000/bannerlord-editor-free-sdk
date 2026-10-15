@@ -1,5 +1,5 @@
 # The SDK's front door: FBX / PNG in, game-ready Bannerlord packages out, no Modding Kit editor.
-# Every writer stages into <SDK_STAGE_DIR>/<stage>/{Assets,RuntimeDataCache[,ModuleData,GUI]} (default stage "work"); `install`
+# Every writer stages into <SDK_STAGE_DIR>/<stage>/{Assets,RuntimeDataCache[,ModuleData,GUI,SceneObj,Sounds]} (default stage "work"); `install`
 # copies a stage into the module with a backup and a manifest, `revert` puts the backup back, and both refuse while the game
 # runs. Library code lives in tpac.py (textures, materials, animations, clips, clip caches), sdk_mesh.py (meshes) and
 # sdk_skeleton.py (skeletons); validators in validate.py; layouts in their headers.
@@ -42,10 +42,12 @@ STAGES = config.SDK_STAGE_DIR
 BACKUPS = config.SDK_BACKUP_DIR
 MODULE_DATA = config.MODULE_DATA
 # stage subfolder -> module folder (ModuleData: XML a generator staged; Module: module root files such as SubModule.xml;
-# GUI: <module>/GUI, where the game reads every *SpriteData.xml, brush and prefab XML)
+# GUI: <module>/GUI, where the game reads every *SpriteData.xml, brush and prefab XML; Sounds: FMOD banks, Sounds/PC/<Module>.bank)
 TARGETS = (("Assets", tpac.ASSETS), ("RuntimeDataCache", tpac.RDC_DIR), ("ModuleData", MODULE_DATA),
            ("Module", config.MODULE), ("GUI", os.path.join(config.MODULE, "GUI")),
-           ("SceneObj", os.path.join(config.MODULE, "SceneObj")))   # SceneObj/<scene id>/<files>
+           ("SceneObj", os.path.join(config.MODULE, "SceneObj")),   # SceneObj/<scene id>/<files>
+           ("Sounds", os.path.join(config.MODULE, "Sounds")))       # Sounds/PC/<bank>
+NESTED = ("SceneObj", "Sounds")      # stage folders whose files keep their relative path; the others are flat
 
 game_running = config.game_running
 
@@ -105,7 +107,7 @@ def _stage_path(stage):
 def plan_for(s):
     plan = []
     for sub, dest in TARGETS:
-        if sub == "SceneObj":      # scene folders: every file under SceneObj/<id>/ keeps its relative path
+        if sub in NESTED:          # every file keeps its relative path (SceneObj/<id>/..., Sounds/PC/...)
             for root_, _dirs, files_ in sorted(os.walk(os.path.join(s, sub))):
                 for fn in sorted(files_):
                     f = os.path.join(root_, fn); plan.append((f, os.path.join(dest, os.path.relpath(f, os.path.join(s, sub)))))
@@ -230,6 +232,8 @@ def revert(manifest=None, owner=None, repack=True):
             os.remove(e["dest"]); print("removed", e["dest"])
             d = os.path.dirname(e["dest"])
             if os.path.basename(os.path.dirname(d)) == "SceneObj" and not os.listdir(d): os.rmdir(d)   # a scene folder this install created
+            snd = os.path.normcase(os.path.join(config.MODULE, "Sounds"))
+            while os.path.normcase(d).startswith(snd) and os.path.isdir(d) and not os.listdir(d): os.rmdir(d); d = os.path.dirname(d)   # Sounds/PC this install created
     man["reverted"] = time.strftime("%Y%m%d_%H%M%S"); write_manifest(manifest, man)
     after_loose_change([e["dest"] for e in man["files"]], repack)
 
@@ -286,11 +290,8 @@ def main(argv=None):
     if cmd == "revert": return revert(a[1] if len(a) > 1 and not a[1].startswith("--") else None, opt("--owner"), "--no-repack" not in a)
     if cmd == "status": return status()
     if cmd == "list":
-        s = _stage_path(stage)
-        for sub, dest in TARGETS:
-            for f in sorted(glob.glob(os.path.join(s, sub, "*"))):
-                d = os.path.join(dest, os.path.basename(f))
-                print("%-8s %-60s %s" % ("replace" if os.path.exists(d) else "new", os.path.basename(f), dest))
+        for f, d in plan_for(_stage_path(stage)):
+            print("%-8s %-60s %s" % ("replace" if os.path.exists(d) else "new", os.path.basename(f), os.path.dirname(d)))
         return
     if cmd == "inspect": return inspect(a[1], a[2] if len(a) > 2 and not a[2].startswith("--") else None)
     if cmd == "selftest":

@@ -99,7 +99,7 @@ Sizes: S = days, M = a week or two, L = several weeks. They are guesses.
 | Physics shapes (collision bodies for props and items) | M | a new prop blocks agents and missiles without the editor |
 | Morph animations (faces), cloth | M each | on demand |
 | Particle systems, decals, prefabs with scripts | M | on demand |
-| Sound (FMOD banks) | exists outside the SDK | move into the SDK |
+| Sound (FMOD banks) | M | WAV files in, a bank with new sound events (and Native events replaced) out, headless: built offline (`bl sound.build`, `bl live play`), not yet heard in game |
 | Run the published SDK in game once, with a screenshot | S | README no longer says "not run in game" |
 
 **Where stream A stands (2026-10-14).** Skinned FBX with any bone names: done, a Blender rig (Root, Spine, Head) skins and animates in game. Texture formats: done, all twelve formats Native uses are read and written

@@ -176,6 +176,77 @@ bl live settlement --values id=town_S1                            # name, positi
 `data.set` writes an XSLT next to an empty XML of that kind in the project's ModuleData and registers it in
 SubModule.xml; the game applies it to the merged data when it loads.
 
+## Sound
+
+New sound events from WAV files, and Native events replaced by the module's own sounds, without FMOD Studio's window.
+`bl sound.build` drives Studio's command line tool (`fmodstudiocl.exe`) on a project it generates.
+
+Needed: FMOD Studio **2.02.27** exactly (fmod.com, Download, older versions; a newer Studio writes banks the game's FMOD
+refuses). It is found in `C:\Program Files\FMOD SoundSystem\FMOD Studio 2.02.27`, or set `FMOD_STUDIO_CL` to its
+`fmodstudiocl.exe`. The game's `modding_resources\FMOD Sample Project` supplies the mixer. `vgmstream-cli` (`BL_VGMSTREAM`
+or the PATH) is optional: with it the check also decodes samples and compares them with the WAV files.
+
+```powershell
+bl sound.list --native "combat impact"           # Native events: 2D or 3D, length, parameters, the mixing a clone would take
+bl sound.add event:/mymod/combat/hit hit_a.wav hit_b.wav --like event:/mission/combat/blunt/med   # one of the files per play
+bl sound.add event:/mymod/ui/click click.wav --like event:/ui/default
+bl sound.add event:/mission/combat/cut/med cut.wav          # a Native path: replaces that event
+bl sound.build               # bank + ModuleData files staged, bank checked offline (--dry first to see the plan)
+bl sound.info --decode 6     # the check again; samples decoded and compared with the WAV files
+bl install                   # game closed
+bl live.enable               # before the game starts
+bl live play --values event=event:/mymod/ui/click                       # as the player hears it (2D)
+bl live play --values event=event:/mymod/combat/hit,x=600,y=640         # at a position in the mission or on the campaign map
+bl live stop                 # ends what play started, loops included
+```
+
+`sound.add` copies the WAV files into the project (`Sounds/src/<event path>/`) and records the event in `sounds.json`.
+Adding a path again replaces its entry. `sound.remove` takes an event out. Mono or stereo WAV (8, 16, 24, 32 bit or float)
+at any rate; FMOD Studio encodes them to the 48 kHz Vorbis of Native's banks.
+
+**`like`** names a Native event. The new event copies its engine attributes (`max_distance`, `parameter_indices`,
+`priority_multiplier`, `bassgid`, send flags) and takes its mixing from the sample-project event closest to it (output bus,
+spatializer, occlusion, voice limits, parameters; loop or one-shot). Pick the Native event that is used the way the new sound
+is: a click like `event:/ui/default`, a melee hit like `event:/mission/combat/blunt/med`, a gunshot like a missile release. Without
+`like` a new event is a 2D one-shot on the UI bus (`event:/mod/ui`). `--loop true|false` overrides the loop of the `like` event.
+`sound.build` reports the mixing template each event got and says when its attributes (2D or 3D) and its template disagree.
+A replaced event keeps its own attributes: the engine sets its parameters by index.
+
+**A module gets**, staged for `bl install`:
+
+| File | Purpose |
+|---|---|
+| `Sounds/PC/<Module>.bank` | the events and samples; FMOD bank format 0x8e/0x8c like Native's |
+| `ModuleData/soundfiles.xml` | lists the bank; the engine loads module banks after Native's |
+| `ModuleData/<module>_sound_event_data.xml` | one row per event: path, GUID, length, distance, parameters; the engine reads it as raw XML |
+| `ModuleData/project.mbproj` | the entries `soln_sound_files` and `soln_sound_event_data` that name those two files; other entries of an existing file stay |
+
+`install` records all four in its manifest, so `revert` removes them. Rules the build keeps:
+
+- Every file `project.mbproj` names must exist: the native sound loader crashes on a missing one. The stage ships them together
+  and `install` checks the registration again.
+- A module bank never reuses a Native GUID. GUIDs are `uuid5` of module id and path, so a rebuild keeps them.
+- The game resolves an event by its GUID and a path through `sound_event_data`. A path that Native has is overwritten by the
+  module's row (the loader replaces an existing path and appends a new one); a second `sound_event_data.xml` merged by the
+  managed code, or an XSLT, is not used.
+- `bl deploy` copies the project's `ModuleData`. If the project has its own `ModuleData/project.mbproj`, add the two sound lines
+  of the staged file to it, or the deploy overwrites the installed registration.
+
+Replacing a Native event changes it everywhere the game plays it. Native often has one event per surface, weapon class or
+armour type; replace each one that should change. Loading such a module (a bank of about 1,600 events, most of them Native
+paths) ran in the game without FMOD errors; hearing the replaced sounds in game is not yet confirmed for this SDK's build.
+
+**In-game check.** `bl live play` answers `event_index` (-1: the engine does not know the path, so the `sound_event_data` row did
+not load), `mode` (2D or 3D), `started`, and how many sounds from `play` are still going; the module's log
+(`<module>_log.txt`) gets a line per play. The engine's log (`rgl_log_<pid>.txt` in
+`ProgramData\Mount and Blade II Bannerlord\logs`) shows the loading: `Loading xml file: $BASE/Modules/<Module>/ModuleData/soundfiles.xml`
+and `.../<module>_sound_event_data.xml` under "reading sound_files xml files" and "reading sound_event_data xml files". A bank the
+FMOD runtime refused shows as `FMOD error! (13)` with the bank's name. About 60 `FMOD error! (74)` lines, "event, parameter,
+bus or vca could not be found", appear in every run of the unmodified game.
+
+Not done: more than one bank per module; events with markers, several tracks or snapshots. One event is one multi
+instrument over its files, picked at random.
+
 ## Looking without the game
 
 ```powershell
@@ -201,6 +272,7 @@ bl live raycast --values x=600,y=640      # what a vertical ray hits first, and 
 bl live sprite --values name=my_icon      # does the game know a UI sprite, and does its sheet load
 bl live animate --values id=0,clip=my_clip   # play a clip on a spawned prefab with a skeleton
 bl live bone --values id=0               # where its last bone is and which way it points now
+bl live play --values event=event:/mymod/ui/click    # a sound event (see Sound); `bl live stop` ends it
 bl live quit                              # quits; under `bl run` the run then counts as passed
 ```
 

@@ -48,6 +48,10 @@ The SDK was first developed for a total conversion with about 34,000 assets.
   library the game ships, loaded from Python with ctypes; cooked from their own description, all 16,655 shipped hulls
   and all 16,701 shipped meshes come out byte-identical (402 meshes with the BVH34 tree, 21 with zero material indices).
   Cooked shapes have not been loaded in game yet.
+- **Sound**: WAV files in, a Bannerlord FMOD bank and the sound events the game can play out, built with FMOD Studio's
+  command line tool (no Studio window), staged and installed with the rest of the module. New events take their mixing
+  (bus, 2D or 3D, parameters, loop) from the Native event they are like, and a Native event can be replaced by the
+  module's own sounds. `bl live play` plays an event in the running game.
 - **Readers for shipped content**: any mesh by name, every battle scene and its rock placement, and the campaign map
   as a height and terrain grid.
 - **Custom assets in scenes**: third-party textures, materials and models (PSK or FBX) as terrain layers and
@@ -103,6 +107,7 @@ arguments. [docs/AGENTS.md](docs/AGENTS.md) is the guide written for agents.
 | Game data | `data.set` (an XSLT patch that changes any object another module defines) |
 | Campaign map | `worldmap.at`, `worldmap.settlements`, `worldmap.bump`, `worldmap.move`, `worldmap.terrain`, `worldmap.look` |
 | Scene slots | `slots.create`, `slots.state`, `slots.fill`, `slots.reset` |
+| Sound | `sound.add`, `sound.remove`, `sound.build`, `sound.list`, `sound.info` (the bridge command `live play` plays an event) |
 | Running game | `live`, `live.enable` |
 
 The same commands are MCP tools. Register the server with an agent, for example in `.mcp.json`:
@@ -127,6 +132,9 @@ Safety rules built into the command line:
 - For `harness/`: PowerShell 5.1 and a small C# component in the module under test (see [Test harness](#test-harness)).
   A project made with `bl new` contains one.
 - For `bl build`: the .NET SDK (any version that can build `net472`). `BL_DOTNET` can point at a specific `dotnet.exe`.
+- For `bl sound.build`: FMOD Studio 2.02.27 exactly (`FMOD_STUDIO_CL` can point at its `fmodstudiocl.exe`); the game's Modding Kit
+  FMOD sample project (`modding_resources` in the game folder) supplies the mixer. `vgmstream-cli` (`BL_VGMSTREAM`, or on the PATH)
+  is optional and lets the check decode samples.
 
 ## Project status
 
@@ -145,6 +153,7 @@ Safety rules built into the command line:
 | Siege and village maps | Verified in game: a shipped castle copied with `scene.copy`, edited with `scene.add_entity`, and listed with `scene.register --kind siege` runs as a Custom Battle siege (200 against 200), with the edits in place. A copied village map listed with `--kind village` runs as a Custom Battle village fight the same way. Interiors are verified in a campaign: `bl live indoor` opens a town's lord's hall the way the game does, and with `scene=` it opens an edited copy of the hall made with `scene.copy` and `scene.add_entity`, edits in place. |
 | Scene slots | Verified in game: a slot filled while the game ran was then loaded for a battle, and slots used in one session were emptied at the next start. |
 | Collision bodies | Verified in game: bodies made by the SDK (capsule and sphere, a cooked convex hull, a cooked triangle mesh) on prefabs spawned while the game runs; a ray cast hits each at the expected height to the millimetre, the same as the game's own fence body rebuilt by the SDK. Bodies on entities placed in a scene file work too: the player, dropped from above onto a cooked 3 m box hull placed with `scene.add_entity --physics`, stands at the ground plus 3 m to the millimetre, and on the ground 6 m beside it. |
+| Sound | Built offline, not yet verified in game. `sound.build` makes a bank from generated WAV files with FMOD Studio 2.02.27's command line; the bank has the bank format of Native's (0x8e/0x8c), every event reaches its samples, the mixer objects it routes into exist in Native's `MasterBank`, and decoded samples match their sources. The route for the bank, `soundfiles.xml` and the event rows is the one an earlier module used: it loaded in game without FMOD errors, and what it sounds like was not recorded. `live play` and `live stop` compile and are not yet run. |
 | Workshop upload file | Written to the format the game's uploader reads. Not verified by an upload. |
 | Other game versions | Untested. `bl compat` reports what still matches. |
 
@@ -229,6 +238,7 @@ the folders in use.
 | Folder under the SDK home | Contents | Written by |
 |---|---|---|
 | `stage` | Staged packages and caches, `_selftest`, `_native_check`, `_cache` | `sdk/` tools |
+| `sound` | The generated FMOD project and build of each module's bank (copies of the game's mixer data) | `sdk/sound.py` |
 | `backup` | Backups of module files replaced by `install`, with manifests (converted game content) | `sdk/install.py`, `sdk/tpac_pack.py` |
 | `GAME_LOCK` | The lock file | `harness/game_lock.ps1`, read by `sdk/` |
 | `out` | Test run results, logs and moved-aside saves | `harness/` |
@@ -294,6 +304,7 @@ python sdk/install.py status
 | `sdk/preview.py` | pictures without the game: a mesh from six sides, a scene from above; `mesh`, `scene` |
 | `sdk/heightmap.py` | a scene from a heightmap image and a scene's heights as an image; `export`, `scene` |
 | `sdk/slots.py` | scratch scene slots: scene folders that can be filled while the game runs |
+| `sdk/sound.py` | sound events from WAV files: the generated FMOD project, the bank build, the ModuleData files, offline bank checks (RIFF/FSB5 reader); behind `bl sound.*` |
 | `sdk/bridge.py` | the outside half of the bridge into the running game (`bl live`) |
 | `harness/` | PowerShell scripts that drive the game unattended |
 | `dump/` | minidump helpers and the headless Ghidra batch script |

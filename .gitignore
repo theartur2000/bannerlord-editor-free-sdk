@@ -1,6 +1,7 @@
 # SDK output: staged packages, backups, caches, scratch
 stage/
 backup/
+sound/
 config_backup/
 out/
 re_out/
