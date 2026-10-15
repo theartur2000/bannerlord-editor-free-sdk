@@ -238,6 +238,8 @@ namespace __MOD__
                     if (TaleWorlds.CampaignSystem.Campaign.Current == null) throw new Exception("no campaign is running");
                     var at = new TaleWorlds.CampaignSystem.CampaignVec2(new Vec2(Num(a, "x"), Num(a, "y")), true); float h = 0f;
                     r["found"] = TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper.GetHeightAtPoint(in at, ref h); r["height"] = h;
+                    var face = at.Face;                                  // the party navmesh face there and its terrain type
+                    r["terrain"] = face.IsValid() ? TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper.GetFaceTerrainType(face).ToString() : "none";
                     return r;
                 }
                 case "mapmove":

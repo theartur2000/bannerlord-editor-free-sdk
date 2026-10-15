@@ -798,6 +798,22 @@ def worldmap_move(a):
     return res
 
 
+@command("worldmap.terrain", "Sets the campaign map's terrain type (Plain, Forest, Mountain, Steppe, Water ...) in a circle: the party navmesh's faces there, kept with the map edits. It sets movement speed and where parties can go.",
+         [P("x", "number", required=True), P("y", "number", required=True), P("radius", "number", required=True), P("type", required=True)], writes=True)
+def worldmap_terrain(a):
+    import json, worldedit
+    d, pj = _need_project(); c = _cfg(); c.require_game()
+    try: worldedit.terrain_id(a["type"])
+    except ValueError as e: raise BlError(str(e))
+    folder = os.path.join(d, "worldmap"); store = os.path.join(folder, "edits.json")
+    edits = (json.load(open(store)) if os.path.isfile(store) else []) + [{"op": "terrain", "x": a["x"], "y": a["y"], "radius": a["radius"], "type": a["type"]}]
+    if a.get("dry"): return {"would_add": edits[-1]}
+    os.makedirs(folder, exist_ok=True); json.dump(edits, open(store, "w"), indent=1)
+    res = worldedit.write_map_scene(edits, d)
+    res["note"] = "`bl deploy` installs the map scene; a new campaign uses it (`bl live mapheight` reports the terrain the game sees)"
+    return res
+
+
 @command("data.set", "Changes attributes of an object the game (or another module) defines: a settlement, an item, a troop, a kingdom ... as an XSLT patch in the project.",
          [P("kind", help="the data kind (the root element): Settlements, Items, NPCCharacters, Kingdoms, Clans, Cultures ...", required=True),
           P("element", help="the object's element: Settlement, Item, NPCCharacter, Kingdom ...", required=True), P("id", help="the object's id", required=True),

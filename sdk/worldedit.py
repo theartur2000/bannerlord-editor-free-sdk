@@ -167,7 +167,7 @@ def edits_field(edits, shape, cell):
     {"op": "bump", "x", "y", "radius", "height"}: a smooth rise (or dip) with a cosine profile."""
     dz = np.zeros(shape, np.float64)
     for e in edits:
-        if e.get("op", "bump") == "move": continue                  # settlement moves change no ground
+        if e.get("op", "bump") in ("move", "terrain"): continue     # settlement moves and terrain types change no ground
         if e.get("op", "bump") != "bump": raise ValueError("unknown map edit %r" % e.get("op"))
         r = float(e["radius"]); x, y = float(e["x"]), float(e["y"])
         j0, j1 = max(0, int((y - r) / cell)), min(shape[0], int((y + r) / cell) + 2)
@@ -263,6 +263,7 @@ def write_map_scene(edits, project, tileset="pointer", dry=False):
         elif not os.path.isfile(t) or os.path.getsize(t) != os.path.getsize(s): shutil.copyfile(s, t)
     flora.write(dst, d)
     moves = apply_moves(edits, os.path.join(src, "scene.xscene"), os.path.join(dst, "scene.xscene"))
+    nav = write_map_navmesh(edits, os.path.join(src, "navmesh.bin"), os.path.join(dst, "navmesh.bin"))
     ts = os.path.join(dst, "TileSets")
     if tileset == "link" and not os.path.lexists(ts):
         r = subprocess.run(["cmd", "/c", "mklink", "/J", ts, os.path.join(src, "TileSets")], capture_output=True, text=True)
@@ -271,7 +272,49 @@ def write_map_scene(edits, project, tileset="pointer", dry=False):
         if os.path.lexists(ts) and _is_junction(ts): os.rmdir(ts)          # never write through a link into SandBox's folder
         os.makedirs(ts, exist_ok=True)
         with open(os.path.join(ts, "WorldMap.gts"), "wb") as f: f.write(tileset_pointer())
-    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "tilesets": tileset}
+    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "navmesh": nav, "tilesets": tileset}
+
+
+def terrain_id(name):
+    import worldmap
+    ids = {v.lower(): k for k, v in worldmap.TERRAIN_TYPES.items()}
+    if str(name).lower() not in ids: raise ValueError("no terrain type %s (one of %s)" % (name, ", ".join(worldmap.TERRAIN_TYPES.values())))
+    return ids[str(name).lower()]
+
+
+def _holds(P, c):
+    """Whether the convex polygon P (n, 2) holds the point c."""
+    s = None
+    for k in range(len(P)):
+        a, b = P[k], P[(k + 1) % len(P)]; x = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        if abs(x) < 1e-12: continue
+        if s is None: s = x > 0
+        elif (x > 0) != s: return False
+    return True
+
+
+def write_map_navmesh(edits, src, dst):
+    """The party navmesh with its vertices raised or lowered by the bumps (they lie about half a unit above the ground) and the
+    terrain type (face group) of the faces whose centre is inside a "terrain" edit's circle set to its type. Returns counts."""
+    import navmesh
+    n = navmesh.NavMesh(src)
+    info, T, z = _read(source_dir()); cell = info["node_size"] / 256.0
+    dz = edits_field(edits, z.shape, cell); v = n.vertices
+    j = np.clip(np.rint(v[:, 1] / cell).astype(int), 0, z.shape[0] - 1); i = np.clip(np.rint(v[:, 0] / cell).astype(int), 0, z.shape[1] - 1)
+    lift = dz[j, i]; n.vertices = (v + np.c_[np.zeros((len(v), 2)), lift]).astype(np.float32)
+    faces = 0
+    terr = [e for e in edits if e.get("op") == "terrain"]
+    if terr:
+        V2 = n.vertices[:, :2].astype(np.float64)
+        for e in terr:
+            c = np.array([float(e["x"]), float(e["y"])]); r = float(e["radius"]); t = terrain_id(e["type"])
+            near = np.hypot(*(V2 - c).T) <= r                    # map faces are a few units across: a face counts when its
+            for k, (vs, _) in enumerate(n.faces):                 # centre or a corner is inside the circle, or it holds the centre
+                P = V2[list(vs)]
+                if near[list(vs)].any() or np.hypot(*(P.mean(0) - c)) <= r or _holds(P, c):
+                    n.face_group[k] = t; faces += 1
+    n.save(dst)
+    return {"vertices_moved": int((np.abs(lift) > 1e-4).sum()), "faces_retyped": faces}
 
 
 def _is_junction(path):

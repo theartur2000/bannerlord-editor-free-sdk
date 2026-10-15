@@ -122,6 +122,7 @@ project (`SceneObj/Main_map`, flora moved, `bl deploy` installs it) and later bu
 
 ```powershell
 bl worldmap.move --id town_S1 --x 375 --y 530     # position, gate and the town's model; check the spot with bl worldmap.at
+bl worldmap.terrain --x 395 --y 520 --radius 6 --type Desert   # the party navmesh's terrain type: speed and passability
 ```
 
 A move is a data patch (posX, posY, gate) plus the settlement's model moved in the map scene copy. The party navmesh is
