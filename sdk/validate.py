@@ -22,6 +22,8 @@
 #   partners  clip_partners.py rule for the action sets given with --sets (blends_with partners are actions of the set)
 #   balance   every clip on a melee release / blocked action is paired with itself (the engine's weapon-balance table)
 #   registration  every project.mbproj id is one Native registers (the engine never merges another id), with Native's type
+#   sound     a staged bank has the 0x8e/0x8c format, is listed in soundfiles.xml, which lists only banks that exist; every event row
+#             has a valid unique guid and a max_distance, and none reuses a Native GUID (sound.py verify_stage)
 #   monsters  body_rotation_reference_bone is not a root, ragdoll_* bones have ragdoll bodies, look-at chain has d6 joints,
 #             IK chains have real bone lengths, eye offsets finite, heights > 0, fall_blow_damage_bone below 28
 import collections, glob, os, re, struct, sys, uuid
@@ -251,6 +253,9 @@ def validate(stage, set_files=(), models=None, bones=None):
     mb = os.path.join(S, "ModuleData", "project.mbproj")
     if os.path.exists(mb):
         errors += validate_registration(mb, [os.path.join(S, "ModuleData"), config.MODULE_DATA])
+    if os.path.isdir(os.path.join(S, "Sounds")) or glob.glob(os.path.join(S, "ModuleData", "*sound_event_data.xml")):
+        import sound
+        errors += sound.verify_stage(S)
     hard = [e for e in errors if not e.startswith("WARN")]
     print("%s: %d skeletons, %d takes, %d clips checked, %d problems, %d advisories" % (
         os.path.basename(S), len(staged), len(takes), n, len(hard), len(errors) - len(hard)))

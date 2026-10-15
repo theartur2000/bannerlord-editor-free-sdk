@@ -4,14 +4,19 @@
 
 These run on GitHub for every push. Everything that compares against the game's own files is in sdk/selftest.py and
 `bl compat`, which need an install. No test here reads a game file and no fixture holds game content: every input is
-made up in the test.
+made up in the test. The one exception is the sound test that runs the whole route (sound_build_with_fmod_studio): it
+reads the game's FMOD sample project and needs FMOD Studio 2.02.27, and it skips itself when either is missing, as on GitHub.
 """
 import json, os, shutil, struct, subprocess, sys, tempfile, traceback
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.path.join(ROOT, "sdk")
 sys.path.insert(0, SDK)
 # A game folder that does not exist, and a private working root: the tests must not depend on, or touch, a real install.
+# (REAL_GAME is the install the environment names, for the one test that skips itself without it.)
+_STEAM = r"C:\Program Files (x86)\Steam\steamapps\common\Mount & Blade II Bannerlord"
+REAL_GAME = os.environ.get("BANNERLORD_DIR") or (_STEAM if os.path.isdir(_STEAM) else None)
 TMP = tempfile.mkdtemp(prefix="bl_tests_")
 os.environ["BANNERLORD_DIR"] = os.path.join(TMP, "no_game")
 os.environ["BANNERLORD_SDK_HOME"] = os.path.join(TMP, "home")
@@ -714,6 +719,214 @@ def flora_round_trip_and_new_instances():
     try: flora.parse(raw + b"\0")
     except ValueError: pass
     else: raise AssertionError("a size field that disagrees with the file was accepted")
+
+
+def _wav_bytes(frames, rate=48000, bits=16, tag=1, extensible=False):
+    """A WAV file of float samples in [-1, 1] shaped [n] or [n, channels]; tag 1 = PCM, 3 = float."""
+    x = np.asarray(frames, float); x = x.reshape(len(x), 1) if x.ndim == 1 else x
+    ch = x.shape[1]
+    if tag == 3: raw = x.astype("<f4").tobytes(); bits = 32
+    elif bits == 8: raw = (x * 127 + 128).astype(np.uint8).tobytes()
+    elif bits == 24: raw = b"".join(struct.pack("<i", int(v * 8388607))[:3] for v in x.reshape(-1))
+    else: raw = (x * 32767).astype("<i2").tobytes()
+    if extensible:
+        fmt = struct.pack("<HHIIHHHHIH14s", 0xFFFE, ch, rate, rate * ch * bits // 8, ch * bits // 8, bits, 22, bits, 0, tag, b"\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71")
+    else: fmt = struct.pack("<HHIIHH", tag, ch, rate, rate * ch * bits // 8, ch * bits // 8, bits)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(raw)) + raw
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def _sweep(secs, f0=300.0, f1=3000.0, rate=48000):
+    t = np.arange(int(secs * rate)) / rate
+    return 0.5 * np.sin(2 * np.pi * (f0 * t + (f1 - f0) * t * t / (2 * secs))) * np.exp(-3 * t / secs)
+
+
+def _write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f: f.write(data)
+    return path
+
+
+@test
+def sound_reads_wav_files_in_every_form_fmod_takes():
+    import sound
+    x = _sweep(0.1)
+    for kw in (dict(bits=8), dict(bits=16), dict(bits=24), dict(tag=3), dict(bits=16, extensible=True), dict(tag=3, extensible=True), dict(rate=22050)):
+        p = _write(os.path.join(TMP, "w", "a.wav"), _wav_bytes(x, **kw)); i = sound.wav_info(p); y, rate = sound.read_wav(p)
+        assert i["frames"] == len(x) and rate == kw.get("rate", 48000) and y.shape == (len(x), 1), kw
+        assert np.abs(y[:, 0] - x).max() < (0.02 if kw.get("bits") == 8 else 1e-3), kw
+        assert i["float"] == (kw.get("tag") == 3)
+    st = _write(os.path.join(TMP, "w", "st.wav"), _wav_bytes(np.c_[x, -x])); assert sound.wav_info(st)["channels"] == 2 and np.allclose(sound.read_wav(st)[0][:, 1], -x, atol=1e-3)
+    for name, data, why in (("junk.wav", b"not a wav", "RIFF"), ("empty.wav", _wav_bytes(np.zeros(0)), "no audio"),
+                            ("adpcm.wav", _wav_bytes(x).replace(b"\x01\x00\x01\x00", b"\x02\x00\x01\x00", 1), "format tag"), ("six.wav", _wav_bytes(np.zeros((10, 6))), "channels")):
+        p = _write(os.path.join(TMP, "w", name), data)
+        try: sound.check_wav(p)
+        except sound.SoundError as e: assert why in str(e), (name, str(e))
+        else: raise AssertionError(name + " was accepted")
+
+
+@test
+def sound_events_are_kept_in_the_project():
+    import scaffold
+    d = os.path.join(TMP, "sndproj"); scaffold.create(d, "SndMod")
+    a = _write(os.path.join(TMP, "snd_in", "a.wav"), _wav_bytes(_sweep(0.2))); b = _write(os.path.join(TMP, "snd_in", "b", "a.wav"), _wav_bytes(_sweep(0.3)))
+    dry = bl_run("sound.add", "event:/sndmod/hit", a, "--dry", cwd=d); assert dry["ok"] and not os.path.exists(os.path.join(d, "sounds.json"))
+    out = bl_run("sound.add", "event:/sndmod/hit", a, b, "--like", "event:/mission/combat/blunt/med", cwd=d)
+    assert out["ok"] and out["result"]["replaces_native"] is False
+    e = json.load(open(os.path.join(d, "sounds.json")))["events"]["event:/sndmod/hit"]
+    assert e["like"] == "event:/mission/combat/blunt/med" and len(e["wavs"]) == 2 and e["wavs"][0] != e["wavs"][1]             # two files named a.wav do not overwrite each other
+    assert all(os.path.isfile(os.path.join(d, *w.split("/"))) for w in e["wavs"])
+    bl_run("sound.add", "event:/sndmod/hit", "--wavs", a, cwd=d); e = json.load(open(os.path.join(d, "sounds.json")))["events"]["event:/sndmod/hit"]
+    assert len(e["wavs"]) == 1 and "like" not in e and len(os.listdir(os.path.join(d, "Sounds", "src", "sndmod", "hit"))) == 1       # added again: replaced, its old copies gone
+    bl_run("sound.add", "event:/sndmod/loop", a, "--loop", cwd=d)
+    assert json.load(open(os.path.join(d, "sounds.json")))["events"]["event:/sndmod/loop"]["loop"] is True
+    ls = bl_run("sound.list", cwd=d)["result"]; assert [x["event"] for x in ls["events"]] == ["event:/sndmod/hit", "event:/sndmod/loop"] and not ls["bank_staged"]
+    for bad_path in ("sndmod/hit", "event:/", "event:/a b", "event:/a//b", "event:/a/"):
+        r = bl_run("sound.add", bad_path, a, cwd=d); assert not r["ok"] and "event path" in r["error"], bad_path
+    r = bl_run("sound.add", "event:/sndmod/x", os.path.join(TMP, "nothing.wav"), cwd=d); assert not r["ok"] and "no file" in r["error"]
+    assert not bl_run("sound.remove", "event:/sndmod/nope", cwd=d)["ok"]
+    assert bl_run("sound.remove", "event:/sndmod/loop", cwd=d)["ok"] and list(json.load(open(os.path.join(d, "sounds.json")))["events"]) == ["event:/sndmod/hit"]
+    assert not os.path.exists(os.path.join(d, "Sounds", "src", "sndmod", "loop"))
+    r = bl_run("sound.build", cwd=d); assert not r["ok"] and ("game" in r["error"] or "FMOD" in r["error"]), r      # no game here: refused before anything is written
+
+
+@test
+def sound_moduledata_files_register_the_bank_and_keep_other_entries():
+    import sound
+    sf = ET.fromstring(sound.soundfiles_xml("SndMod"))
+    assert sf.get("type") == "sound" and [f.get("name") for f in sf.iter("file")] == ["SndMod.bank"] and sf.find("asset_files/file").get("decompress_samples") == "false"
+    rows = [dict(guid="{0e6181f0-6f4d-5193-b9ab-7dbdba49071b}", path="event:/sndmod/a&b", length="0.6", max_distance="450", priority_multiplier="1", bassgid="-1",
+                 parameter_indices="isPlayer,Armor Type", send_is_player="true", send_occlusion="false", ignored="x")]
+    ev = ET.fromstring(sound.event_data_xml(rows)); e = ev.find("events/event")
+    assert ev.get("type") == "sound_event_data" and e.get("path") == "event:/sndmod/a&b" and e.get("parameter_indices") == "isPlayer,Armor Type" and e.get("ignored") is None and e.get("length") == "0.6"
+    new = sound.mbproj_text("SndMod")
+    assert [(f.get("id"), f.get("name"), f.get("type")) for f in ET.fromstring(new).iter("file")] == [
+        ("soln_sound_files", "ModuleData/soundfiles.xml", "sound_files"), ("soln_sound_event_data", "ModuleData/sndmod_sound_event_data.xml", "sound_event_data")]
+    base = new.replace("</base>", '  <file id="soln_skins" name="ModuleData/skins.xml" type="skin" />\n</base>').replace("ModuleData/soundfiles.xml", "ModuleData/old.xml")
+    again = sound.mbproj_text("SndMod", base); ids = [f.get("id") for f in ET.fromstring(again).iter("file")]
+    assert sorted(ids) == ["soln_skins", "soln_sound_event_data", "soln_sound_files"] and "old.xml" not in again and sound.mbproj_text("SndMod", again) == again       # the module's other entries stay; a rerun changes nothing
+    try: sound.mbproj_text("SndMod", "<base>")
+    except sound.SoundError: pass
+    else: raise AssertionError("a project.mbproj without </base> was extended")
+
+
+def _fake_bank(events):
+    """A made-up FMOD bank shaped like a built one: an FMT chunk, event objects that name WAV objects, SNDH and an FSB5 with one mono
+    Vorbis-looking sample per WAV. events: [(event guid string, number of samples)]. Returns the bytes."""
+    import sound, uuid
+    def chunk(cid, body): return cid + struct.pack("<I", len(body)) + body + (b"\0" if len(body) & 1 else b"")
+    nsamp = sum(n for _, n in events); lists = b""; wavs = b""; k = 0
+    for g, n in events:
+        ids = []
+        for _ in range(n):
+            wid = uuid.uuid5(uuid.NAMESPACE_URL, "wav%d" % k).bytes_le; ids.append(wid)
+            wavs += chunk(b"WAV ", wid + bytes(6) + struct.pack("<I", k) + bytes(6)); k += 1
+        inner = chunk(b"EVTD", uuid.UUID(g).bytes_le + b"".join(ids))
+        lists += b"LIST" + struct.pack("<I", 4 + len(inner)) + b"EVTX" + inner
+    heads, data, off = b"", b"", 0
+    for i in range(nsamp):
+        pk = b"".join(struct.pack("<H", 5) + b"\x03abcd" for _ in range(3)); pk += bytes(-len(pk) % 32)
+        vorbis = struct.pack("<II", sound.SETUP_CRC[1], 0)
+        heads += struct.pack("<Q", 1 | (9 << 1) | ((off >> 5) << 7) | (1000 << 34)) + struct.pack("<I", (11 << 25) | (len(vorbis) << 1)) + vorbis
+        data += pk; off += len(pk)
+    names = b"".join(b"s%d\0" % i for i in range(nsamp))
+    table = b"".join(struct.pack("<I", 4 * nsamp + sum(len(b"s%d\0" % j) for j in range(i))) for i in range(nsamp))
+    fsb = b"FSB5" + struct.pack("<6I", 1, nsamp, len(heads), len(table + names), len(data), 15) + bytes(32) + heads + table + names + data
+    head = b"FMT " + struct.pack("<III", 8, 0x8E, 0x8C) + lists + wavs
+    fsb_at = 12 + len(head) + 8 + 12 + 8
+    body = head + b"SNDH" + struct.pack("<I", 12) + struct.pack("<III", 0, fsb_at, len(fsb)) + b"SND " + struct.pack("<I", len(fsb)) + fsb
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"FEV " + body
+
+
+@test
+def sound_bank_check_reads_a_made_up_bank():
+    import sound
+    ga, gb = "{0e6181f0-6f4d-5193-b9ab-7dbdba49071b}", "{c387ebb0-904c-5627-87d3-3b810c6ad63f}"
+    data = _fake_bank([(ga, 2), (gb, 1)]); p = _write(os.path.join(TMP, "fake", "Sounds", "PC", "Fake.bank"), data)
+    r = sound.check_bank(p, [dict(guid=ga, path="event:/fake/a", files=2), dict(guid=gb, path="event:/fake/b", files=1)])
+    assert r["ok"] and r["format"] == "0x8e/0x8c" and r["samples"] == 3 and r["mono"] == 3 and r["setups"] == {"0x571c7954": 3}, r
+    assert [e["ok"] for e in r["events"]] == [True, True] and [len(e["samples"]) for e in r["events"]] == [2, 1]
+    r = sound.check_bank(p, [dict(guid=ga, path="event:/fake/a", files=3)]); assert not r["ok"] and "reaches 2 samples" in r["problems"][0]
+    r = sound.check_bank(p, [dict(guid="{00000000-0000-0000-0000-000000000001}", path="event:/fake/c", files=1)]); assert not r["ok"] and "not in the bank" in r["problems"][0]
+    bad = bytearray(data); struct.pack_into("<I", bad, bytes(bad).find(b"FMT ") + 12, 0x90)
+    r = sound.check_bank(_write(os.path.join(TMP, "fake", "bad.bank"), bytes(bad))); assert not r["ok"] and "0x90" in r["problems"][0]
+    try: sound.check_bank(_write(os.path.join(TMP, "fake", "junk.bank"), b"RIFF" + bytes(20)))
+    except sound.SoundError: pass
+    else: raise AssertionError("a file that is not a bank was checked")
+    # the event file in the stage beside a bank names its events
+    _write(os.path.join(TMP, "fake", "ModuleData", "fake_sound_event_data.xml"), sound.event_data_xml([dict(guid=ga, path="event:/fake/a", max_distance="100000", length="1"),
+                                                                                                   dict(guid=gb, path="event:/fake/b", max_distance="20", length="1")]).encode())
+    r = sound.info(p); assert r["ok"] and [e["path"] for e in r["events"]] == ["event:/fake/a", "event:/fake/b"], r
+
+
+@test
+def sound_stage_goes_into_the_module_and_is_checked():
+    import sound, install
+    ga = "{0e6181f0-6f4d-5193-b9ab-7dbdba49071b}"
+    stage = os.path.join(TMP, "sndstage")
+    _write(os.path.join(stage, "Sounds", "PC", "Fake.bank"), _fake_bank([(ga, 1)])); _write(os.path.join(stage, "ModuleData", "soundfiles.xml"), sound.soundfiles_xml("Fake").encode())
+    _write(os.path.join(stage, "ModuleData", "fake_sound_event_data.xml"), sound.event_data_xml([dict(guid=ga, path="event:/fake/a", max_distance="100000", length="1")]).encode())
+    _write(os.path.join(stage, "ModuleData", "project.mbproj"), sound.mbproj_text("Fake").encode())
+    plan = {os.path.relpath(t, install.config.MODULE).replace(os.sep, "/"): os.path.basename(s) for s, t in install.plan_for(stage)}
+    assert plan == {"Sounds/PC/Fake.bank": "Fake.bank", "ModuleData/soundfiles.xml": "soundfiles.xml", "ModuleData/fake_sound_event_data.xml": "fake_sound_event_data.xml",
+                    "ModuleData/project.mbproj": "project.mbproj"}, plan
+    assert sound.verify_stage(stage) == []
+    def broken(edit, why, rel):                                    # each way the engine would misread the stage is named
+        copy = os.path.join(TMP, "sndstage_bad"); shutil.rmtree(copy, ignore_errors=True); shutil.copytree(stage, copy)
+        p = os.path.join(copy, *rel.split("/"))
+        if edit == "delete": os.remove(p)
+        else:
+            raw = open(p, "rb").read(); open(p, "wb").write(edit(raw))
+        errs = sound.verify_stage(copy); assert any(why in e for e in errs), (why, errs)
+    broken("delete", "neither staged nor in the module", "Sounds/PC/Fake.bank")
+    broken(lambda b: b.replace(b'name="Fake.bank"', b'name="Other.bank"'), "not listed", "ModuleData/soundfiles.xml")
+    broken(lambda b: b.replace(b' max_distance="100000"', b""), "max_distance", "ModuleData/fake_sound_event_data.xml")
+    broken(lambda b: b.replace(ga.encode(), b"{nope}"), "valid guid", "ModuleData/fake_sound_event_data.xml")
+    broken(lambda b: b[:b.find(b"FMT ") + 12] + struct.pack("<I", 0x90) + b[b.find(b"FMT ") + 16:], "0x90", "Sounds/PC/Fake.bank")
+
+
+@test
+def bridge_commands_are_in_the_template_the_list_and_the_summary():
+    import bridge, bl
+    tpl = open(os.path.join(SDK, "scaffold", "src", "Bridge.cs.tpl"), encoding="utf-8").read()
+    summary = bl.COMMANDS["live"]["summary"].split("Commands: ")[1].rstrip(".").split(", ")
+    assert summary == list(bridge.COMMANDS), "the summary of `bl live` and bridge.COMMANDS differ"
+    for c in bridge.COMMANDS:
+        assert 'case "%s":' % c in tpl, c + " has no case in Bridge.cs"
+        assert ("\n//   " + c + " ") in tpl or ("\n//   " + c + "\n") in tpl, c + " is not described in the header of Bridge.cs"
+    assert "SoundEvent.GetEventIdFromString" in tpl and {"play", "stop"} <= set(bridge.COMMANDS)
+
+
+@test
+def sound_build_with_fmod_studio():
+    """The whole route on made-up sweeps. Needs the game's Modding Kit FMOD sample project and FMOD Studio 2.02.27 (it reads, never writes,
+    the game folder; everything is built under the test's private root); skipped without them, as on GitHub."""
+    game = REAL_GAME
+    studio = os.environ.get("FMOD_STUDIO_CL") or os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "FMOD SoundSystem", "FMOD Studio 2.02.27", "fmodstudiocl.exe")
+    sample = os.path.join(game or "", "modding_resources", "FMOD Sample Project", "FMODModdingProjectExample", "Metadata")
+    if not (game and os.path.isdir(sample) and os.path.isfile(studio)):
+        print("  skipped: needs the game's FMOD sample project and FMOD Studio 2.02.27"); return
+    import scaffold
+    env = dict(os.environ, BANNERLORD_DIR=game, BANNERLORD_SDK_HOME=os.path.join(TMP, "home_studio"))
+    d = os.path.join(TMP, "studioproj"); scaffold.create(d, "SndMod")
+    hit = [_write(os.path.join(TMP, "studio_in", "hit%d.wav" % i), _wav_bytes(_sweep(0.4 + 0.1 * i, 900, 150))) for i in range(2)]
+    click = _write(os.path.join(TMP, "studio_in", "click.wav"), _wav_bytes(np.c_[_sweep(0.1, 2000, 3500, 44100), _sweep(0.1, 2500, 4000, 44100)], rate=44100))
+    def run(*argv):
+        r = subprocess.run([sys.executable, os.path.join(SDK, "bl.py")] + list(argv), capture_output=True, text=True, cwd=d, env=env, encoding="utf-8")
+        out = json.loads([l for l in r.stdout.splitlines() if l.strip()][-1]); assert out["ok"], out
+        return out["result"]
+    run("sound.add", "event:/sndmod/combat/hit", *hit, "--like", "event:/mission/combat/blunt/med")
+    run("sound.add", "event:/sndmod/ui/click", click, "--like", "event:/ui/default")
+    r = run("sound.build", "--decode", "4")
+    assert r["ok"] and r["check"]["format"] == "0x8e/0x8c" and r["check"]["samples"] == 3 and r["check"]["stereo"] == 1 and not r["check"]["problems"], r
+    assert [e["files"] for e in r["events"]] == [2, 1] and all(e["template"] for e in r["events"])
+    dec = r["check"]["decode"]; assert "skipped" in dec or dec["matched"] == dec["tried"] == 3, dec
+    stage = os.path.join(env["BANNERLORD_SDK_HOME"], "stage", "work")
+    for f in ("Sounds/PC/SndMod.bank", "ModuleData/soundfiles.xml", "ModuleData/sndmod_sound_event_data.xml", "ModuleData/project.mbproj"): assert os.path.isfile(os.path.join(stage, *f.split("/"))), f
+    rows = list(ET.parse(os.path.join(stage, "ModuleData", "sndmod_sound_event_data.xml")).getroot().iter("event"))
+    assert [(x.get("path"), x.get("max_distance")) for x in rows] == [("event:/sndmod/combat/hit", "450"), ("event:/sndmod/ui/click", "100000")]
+    again = run("sound.build"); assert [e["guid"] for e in again["events"]] == [e["guid"] for e in r["events"]]                        # a rebuild keeps the GUIDs
+    assert run("sound.info", "--decode", "3")["ok"]
 
 
 def uuid_bytes(s):

@@ -13,7 +13,7 @@ The commands are listed at the top of Bridge.cs. The C# half compiles; it has no
 """
 import json, os, time, uuid
 
-COMMANDS = ("ping", "state", "ground", "raycast", "teleport", "look", "screenshot", "spawn", "remove", "animate", "bone", "settlement", "mapheight", "mapmove", "navcache", "indoor", "sprite", "say", "quit")
+COMMANDS = ("ping", "state", "ground", "raycast", "teleport", "look", "screenshot", "spawn", "remove", "animate", "bone", "settlement", "mapheight", "mapmove", "navcache", "indoor", "sprite", "say", "play", "stop", "quit")
 
 
 def folder(module): return os.path.join(module, "bridge")
