@@ -132,7 +132,7 @@ not changed, so put a settlement where `worldmap.at` reports land (Plain, Forest
 
 The map scene copy carries `TileSets/WorldMap.gts` (4 MB): the engine opens the first .gts in the module's own
 `SceneObj/Main_map/TileSets`, and this copy's page names lead to SandBox's 2.1 GB of pages, by a path relative to
-`<game>/Modules/<module>`. A module installed elsewhere (a Steam Workshop folder) needs that path made for its own place.
+`<game>/Modules/<module>`. A module made with `bl new` sets that path for wherever it is installed (a Steam Workshop folder too) when it loads (`MapTiles.Fix` in SubModule.cs; verified in game: a .gts with SandBox's own page names is repointed at load and the map keeps its colours).
 
 `worldmap.look --mode painted` leaves the shipped renderer: the map is drawn from `terrain.bin` (with the bumps in it)
 and one colour texture, `<module>_worldmap_colour`, painted from the terrain types and the relief or taken from your
