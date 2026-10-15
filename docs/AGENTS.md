@@ -83,6 +83,7 @@ bl scene from-heightmap out.png my_map --to project        # a playable scene fr
 bl scene register my_map --name "My map"          # list it in Custom Battle
 bl scene add-entity my_map --prefab rock_cliff_b --position "600 640" --on-ground --rotation "0 0 45"
 bl scene preview my_map my_map.png                # top view: relief, layers, rocks, trees, spawn paths
+bl scene flora my_map --add tree_high_a --position "600 640" --count 12 --radius 9   # placed trees (flora.bin); --kinds lists them
 bl scene check my_map                             # do the files rebuild identically
 bl asset collision crate_body --hull crate.obj    # a collision body: capsules, spheres, cooked hulls and meshes
 bl prefab add crate --mesh crate --physics crate_body     # a prefab of the project: scenes and `bl live spawn` place it

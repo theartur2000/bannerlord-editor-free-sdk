@@ -596,6 +596,49 @@ def scene_add_entity(a):
     return {"scene": f, "added": {"prefab": a.get("prefab"), "mesh": a.get("mesh"), "position": [round(x, 3) for x in pos]}, "entities": len(doc.entities(True)), "saved": not a.get("dry")}
 
 
+@command("scene.flora", "The placed flora of a scene (flora.bin: trees, bushes, plants, rocks): list it, add an instance or a scatter, remove by kind.",
+         [SCENE, P("add", help="a flora kind (ModuleData/flora_kinds.xml), for example tree_high_a, shrub_a, ground_rock"),
+          P("position", help="x y (on the ground) or x y z"), P("count", "int", help="with --radius: scatter this many around --position", default=1),
+          P("radius", "number", help="scatter radius in metres", default=0.0), P("yaw", "number", help="degrees; random when scattering"),
+          P("scale", "number", default=1.0), P("seed", "int", default=1), P("remove", help="remove the instances of this kind (or kinds containing the text)"),
+          P("kinds", "bool", help="list the kinds the game defines")], writes=True)
+def scene_flora(a):
+    import flora, numpy as np
+    if a.get("kinds"): k = flora.kinds(); return {"kinds": len(k), "names": sorted(k)}
+    f = _scene_folder(a["scene"]); path = os.path.join(f, "flora.bin")
+    d = flora.read(path) if os.path.isfile(path) else dict(names=[], rec=np.zeros(0, flora.REC))
+    if not a.get("add") and not a.get("remove"):
+        by = {}
+        for nm in d["names"]: by[nm] = by.get(nm, 0) + 1
+        return {"scene": f, "instances": len(d["names"]), "by_kind": dict(sorted(by.items(), key=lambda x: -x[1]))}
+    if not a.get("dry"): _writable_scene(f)
+    removed = 0
+    if a.get("remove"):
+        keep = [i for i, nm in enumerate(d["names"]) if a["remove"] not in nm]; removed = len(d["names"]) - len(keep)
+        d = dict(names=[d["names"][i] for i in keep], rec=d["rec"][keep])
+    added = []
+    if a.get("add"):
+        kinds = flora.kinds()
+        if a["add"] not in kinds: raise BlError("no flora kind %s" % a["add"], "list them with `bl scene.flora <scene> --kinds`")
+        if not a.get("position"): raise BlError("--position is needed with --add")
+        pos = [float(x) for x in str(a["position"]).replace(",", " ").split()]
+        if len(pos) not in (2, 3): raise BlError("--position takes x y or x y z")
+        rng = np.random.default_rng(a.get("seed") or 1); n = max(1, int(a.get("count") or 1)); r = float(a.get("radius") or 0)
+        names, recs = list(d["names"]), [d["rec"]]
+        for k in range(n):
+            if r > 0:
+                t, q = rng.uniform(0, 2 * np.pi), r * np.sqrt(rng.uniform()); x, y = pos[0] + q * np.cos(t), pos[1] + q * np.sin(t)
+            else: x, y = pos[0], pos[1]
+            z = pos[2] if len(pos) == 3 and r == 0 else _ground(f, x, y)
+            yaw = float(a["yaw"]) if a.get("yaw") is not None and n == 1 else float(rng.uniform(0, 360))
+            nm, rec = flora.instance(a["add"], x, y, z, yaw, float(a.get("scale") or 1.0), int(rng.integers(kinds[a["add"]])))
+            names.append(nm); recs.append(np.array([rec], flora.REC)); added.append([round(x, 2), round(y, 2), round(z, 2)])
+        d = dict(names=names, rec=np.concatenate(recs))
+    if not a.get("dry"): flora.write(path, d)
+    return {"scene": f, "added": len(added), "positions": added[:20], "removed": removed, "instances": len(d["names"]), "saved": not a.get("dry"),
+            "note": "the game reads flora.bin when the scene loads (`bl install` copies a staged scene)"}
+
+
 @command("scene.remove_entities", "Removes the top-level entities whose prefab or name contains a text.", [SCENE, P("match", required=True)], writes=True)
 def scene_remove_entities(a):
     import scene

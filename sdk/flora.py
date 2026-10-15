@@ -57,13 +57,26 @@ def positions(d):
     return d["rec"]["m"][:, 3, :3].astype(np.float64)
 
 
-def instance(name, x, y, z, yaw_deg=0.0, scale=1.0):
-    """One new instance: upright, turned by yaw around z, uniform scale."""
+def instance(name, x, y, z, yaw_deg=0.0, scale=1.0, variation=0):
+    """One new instance: upright, turned by yaw around z, uniform scale, the kind's variation number."""
     c, s = np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg))
     r = np.zeros(1, REC)
     r["m"][0] = [[c * scale, s * scale, 0, 0], [-s * scale, c * scale, 0, 0], [0, 0, scale, 0], [x, y, z, 1]]
-    r["tail"][0] = 1.0
+    r["tail"][0] = 1.0; r["u0"][0] = variation
     return name, r[0]
+
+
+def kinds():
+    """{kind name: number of summer variations} of every flora kind the game defines (ModuleData/flora_kinds.xml of all
+    modules). An instance's u32 is read as the index of its variation."""
+    import re
+    out = {}
+    for p in sorted(glob.glob(os.path.join(config.MODULES, "*", "ModuleData", "flora_kinds.xml"))):
+        t = open(p, encoding="utf-8-sig").read()
+        for m in re.finditer(r'<flora_kind\s+name="([^"]+)"(.*?)</flora_kind>', t, re.S):
+            summer = re.search(r'season="summer">(.*?)</seasonal_kind>', m.group(2), re.S)
+            out[m.group(1)] = len(re.findall(r"<flora_variation\s", summer.group(1) if summer else m.group(2))) or 1
+    return out
 
 
 def shipped():
