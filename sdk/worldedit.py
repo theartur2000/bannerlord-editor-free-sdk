@@ -245,11 +245,19 @@ def tileset_pointer(pages_prefix=SANDBOX_PAGES):
     return bytes(b)
 
 
-def write_map_scene(edits, project, tileset="pointer", dry=False):
+def write_map_scene(edits, project, tileset="pointer", dry=False, look=None, stage=None, module=None):
     """<project>/SceneObj/Main_map: the shipped map scene as is, with its flora moved by the edits (so trees stand on raised
     ground) and settlements moved. The game then reads this folder's scene.xscene, flora.bin and tile set. tileset: "pointer"
     (a 4 MB WorldMap.gts whose pages are SandBox's, the default: shippable), "link" (a directory junction to SandBox's
-    TileSets) or "none" (the map's ground is then drawn without its colours)."""
+    TileSets) or "none" (the map's ground is then drawn without its colours).
+    look: None = the project's worldmap/look.json (else "shipped"). {"mode": "painted", "image": optional PNG} draws the map
+    from terrain.bin (the edits' heights) with one colour texture (painted from the terrain types and the relief, or the
+    image), staged into `stage` as <module>_worldmap_colour: the shipped renderer and its tile set are then not used."""
+    import json
+    if look is None:
+        lp = os.path.join(project, "worldmap", "look.json")
+        look = json.load(open(lp)) if os.path.isfile(lp) else {"mode": "shipped"}
+    painted = look.get("mode") == "painted"
     import flora
     src = source_dir(); dst = os.path.join(project, "SceneObj", "Main_map")
     d, moved = map_flora(edits)
@@ -260,11 +268,27 @@ def write_map_scene(edits, project, tileset="pointer", dry=False):
         if f in ("TileSets", "flora.bin", "scene.xscene"): continue
         if os.path.isdir(s):
             if not os.path.isdir(t): shutil.copytree(s, t)
-        elif not os.path.isfile(t) or os.path.getsize(t) != os.path.getsize(s): shutil.copyfile(s, t)
+        elif f == "terrain.bin" or not os.path.isfile(t) or os.path.getsize(t) != os.path.getsize(s): shutil.copyfile(s, t)
     flora.write(dst, d)
     moves = apply_moves(edits, os.path.join(src, "scene.xscene"), os.path.join(dst, "scene.xscene"))
+    colour = None
+    if painted:                                   # heights into terrain.bin (it moves the navmesh too, rewritten just below)
+        info, T, z = _read(src); set_heights(dst, z + edits_field(edits, z.shape, info["node_size"] / 256.0))
     nav = write_map_navmesh(edits, os.path.join(src, "navmesh.bin"), os.path.join(dst, "navmesh.bin"))
+    if painted:
+        if not stage or not module: raise ValueError("the painted look needs the stage and the module name")
+        colour = write_colour_map(edits, dst, stage, module, look.get("image"))
+        name = colour["name"].encode()
+        p = os.path.join(dst, "scene.xscene"); b = open(p, "rb").read()
+        b = b.replace(b' terrain_render_version="1"', b"")
+        import re
+        b = re.sub(rb'vista_diffuse_name="[^"]*"', b'vista_diffuse_name="' + name + b'"', b)
+        open(p, "wb").write(b)
+        tileset = "none"
     ts = os.path.join(dst, "TileSets")
+    if tileset == "none" and os.path.lexists(ts):
+        if _is_junction(ts): os.rmdir(ts)
+        else: shutil.rmtree(ts)
     if tileset == "link" and not os.path.lexists(ts):
         r = subprocess.run(["cmd", "/c", "mklink", "/J", ts, os.path.join(src, "TileSets")], capture_output=True, text=True)
         if r.returncode != 0: raise ValueError("could not link TileSets: " + (r.stdout + r.stderr).strip())
@@ -272,7 +296,39 @@ def write_map_scene(edits, project, tileset="pointer", dry=False):
         if os.path.lexists(ts) and _is_junction(ts): os.rmdir(ts)          # never write through a link into SandBox's folder
         os.makedirs(ts, exist_ok=True)
         with open(os.path.join(ts, "WorldMap.gts"), "wb") as f: f.write(tileset_pointer())
-    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "navmesh": nav, "tilesets": tileset}
+    return {"map_scene": dst, "trees_moved": moved, "settlements_moved": moves, "navmesh": nav, "tilesets": tileset, "look": look.get("mode"), "colour_map": colour}
+
+
+PALETTE = {0: (28, 52, 86), 1: (112, 138, 62), 2: (196, 172, 118), 3: (232, 232, 236), 4: (44, 82, 38), 5: (150, 142, 84), 6: (60, 96, 120),
+           7: (122, 116, 106), 8: (40, 72, 110), 10: (36, 66, 104), 11: (50, 90, 125), 13: (110, 96, 80), 14: (120, 140, 70), 15: (70, 90, 60),
+           16: (205, 180, 120), 17: (120, 100, 80), 18: (36, 66, 104), 19: (28, 52, 86), 20: (200, 190, 150), 21: (100, 95, 90),
+           22: (50, 90, 125), 23: (112, 138, 62), 24: (36, 66, 104), 25: (50, 90, 125)}   # by terrain type (worldmap.TERRAIN_TYPES)
+
+
+def paint_colours(scene_dir, size=2048):
+    """An RGB picture of the map (rows from the far edge, as the map's textures): each spot coloured by its terrain type in
+    scene_dir's navmesh, shaded by the slope of scene_dir's terrain.bin."""
+    import worldmap
+    T = worldmap.WorldMap(scene_dir).terrain_types(size)
+    info, Tr, z = _read(scene_dir)
+    idx = (np.arange(size) * (z.shape[0] - 1) / size).astype(int); h = z[np.ix_(idx, idx)]
+    img = np.zeros((size, size, 3), np.float64)
+    for k, c in PALETTE.items(): img[T == k] = c
+    gy, gx = np.gradient(h, info["nx"] * info["node_size"] / size); slope = np.hypot(gx, gy)
+    light = np.clip(1.0 - 0.6 * np.clip(slope, 0, 1) + 0.25 * (-gx - gy) / (1 + slope), 0.45, 1.25)
+    return np.clip(img * light[..., None], 0, 255).astype(np.uint8)[::-1]
+
+
+def write_colour_map(edits, scene_dir, stage, module, image=None):
+    """Stages <module>_worldmap_colour (BC1 with mips) from `image` (any size; row 0 = the map's far edge) or painted."""
+    import pngio, tpac
+    name = module.lower() + "_worldmap_colour"
+    png = os.path.join(scene_dir, "..", "..", "worldmap", name + ".png")
+    os.makedirs(os.path.dirname(png), exist_ok=True)
+    if image: shutil.copyfile(image, png)
+    else: pngio.write_png(png, paint_colours(scene_dir))
+    out, rdc, r = tpac.write_texture(png, name=name, fmt="bc1", force=True, out_dir=os.path.join(stage, "Assets"), rdc_dir=os.path.join(stage, "RuntimeDataCache"))
+    return {"name": name, "source": os.path.normpath(png), "package": out, "size": [r["w"], r["h"]]}
 
 
 def terrain_id(name):

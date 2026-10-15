@@ -123,6 +123,7 @@ project (`SceneObj/Main_map`, flora moved, `bl deploy` installs it) and later bu
 ```powershell
 bl worldmap.move --id town_S1 --x 375 --y 530     # position, gate and the town's model; check the spot with bl worldmap.at
 bl worldmap.terrain --x 395 --y 520 --radius 6 --type Desert   # the party navmesh's terrain type: speed and passability
+bl worldmap.look --mode painted                   # draw the map from one colour texture (terrain types + relief), or --image my.png
 ```
 
 A move is a data patch (posX, posY, gate) plus the settlement's model moved in the map scene copy. The party navmesh is
@@ -131,6 +132,11 @@ not changed, so put a settlement where `worldmap.at` reports land (Plain, Forest
 The map scene copy carries `TileSets/WorldMap.gts` (4 MB): the engine opens the first .gts in the module's own
 `SceneObj/Main_map/TileSets`, and this copy's page names lead to SandBox's 2.1 GB of pages, by a path relative to
 `<game>/Modules/<module>`. A module installed elsewhere (a Steam Workshop folder) needs that path made for its own place.
+
+`worldmap.look --mode painted` leaves the shipped renderer: the map is drawn from `terrain.bin` (with the bumps in it)
+and one colour texture, `<module>_worldmap_colour`, painted from the terrain types and the relief or taken from your
+image (row 0 = the far edge, the largest y). Edited land then gets its own colours, which is what a new continent needs;
+the shipped map's fine detail is gone. `--mode shipped` goes back.
 
 Interiors (lord's halls, taverns, arenas, keeps) are not Custom Battle maps. They are opened in a campaign through the
 bridge, from the campaign map:

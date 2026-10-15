@@ -772,7 +772,7 @@ def worldmap_bump(a):
     res = worldedit.write_height_textures(edits + [e], os.path.join(stage, "Assets"), os.path.join(stage, "RuntimeDataCache"), png_dir=folder)
     os.makedirs(folder, exist_ok=True); json.dump(edits + [e], open(store, "w"), indent=1)
     if a.get("trees") or os.path.isdir(os.path.join(d, "SceneObj", "Main_map")):
-        res["map_scene"] = worldedit.write_map_scene(edits + [e], d)
+        res["map_scene"] = worldedit.write_map_scene(edits + [e], d, stage=stage, module=pj["module"])
     res.update(height_shipped=round(before, 3), height_after=round(after, 3),
                note="`bl install` puts the textures in the module" + (", `bl deploy` the map scene" if "map_scene" in res else "") + "; a new campaign or a loaded save shows the change")
     return res
@@ -793,7 +793,7 @@ def worldmap_move(a):
     if a.get("dry"): return {"would_patch": attrs, "would_write": os.path.join(d, "SceneObj", "Main_map")}
     datapatch.set_attrs(d, pj["module"], "Settlements", "Settlement", a["id"], attrs)
     os.makedirs(folder, exist_ok=True); json.dump(edits, open(store, "w"), indent=1)
-    res = worldedit.write_map_scene(edits, d)
+    res = worldedit.write_map_scene(edits, d, stage=os.path.join(c.SDK_STAGE_DIR, "work"), module=pj["module"])
     res.update(settlement=a["id"], data=attrs, note="`bl deploy` installs the map scene and the patch; a new campaign shows the move. The party navmesh is not changed: put a settlement on land parties reach")
     return res
 
@@ -809,8 +809,26 @@ def worldmap_terrain(a):
     edits = (json.load(open(store)) if os.path.isfile(store) else []) + [{"op": "terrain", "x": a["x"], "y": a["y"], "radius": a["radius"], "type": a["type"]}]
     if a.get("dry"): return {"would_add": edits[-1]}
     os.makedirs(folder, exist_ok=True); json.dump(edits, open(store, "w"), indent=1)
-    res = worldedit.write_map_scene(edits, d)
+    res = worldedit.write_map_scene(edits, d, stage=os.path.join(c.SDK_STAGE_DIR, "work"), module=pj["module"])
     res["note"] = "`bl deploy` installs the map scene; a new campaign uses it (`bl live mapheight` reports the terrain the game sees)"
+    return res
+
+
+@command("worldmap.look", "How the edited campaign map is drawn: shipped (its own renderer and colours, heights through the height textures) or painted (one colour texture, painted from the terrain types or your own image, heights from terrain.bin): the way to a new continent.",
+         [P("mode", choices=["shipped", "painted"], required=True), P("image", help="painted: your colour map (PNG, row 0 = the map's far edge, the largest y), instead of the painted one")], writes=True)
+def worldmap_look(a):
+    import json, worldedit
+    d, pj = _need_project(); c = _cfg(); c.require_game()
+    look = {"mode": a["mode"]}
+    if a.get("image"):
+        if not os.path.isfile(a["image"]): raise BlError("no file " + a["image"])
+        look["image"] = os.path.abspath(a["image"])
+    folder = os.path.join(d, "worldmap"); store = os.path.join(folder, "edits.json")
+    edits = json.load(open(store)) if os.path.isfile(store) else []
+    if a.get("dry"): return {"would_set": look}
+    os.makedirs(folder, exist_ok=True); json.dump(look, open(os.path.join(folder, "look.json"), "w"), indent=1)
+    res = worldedit.write_map_scene(edits, d, stage=os.path.join(c.SDK_STAGE_DIR, "work"), module=pj["module"])
+    res["note"] = "`bl install` (the colour map) and `bl deploy` (the map scene); a new campaign shows it"
     return res
 
 
