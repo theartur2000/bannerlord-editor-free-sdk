@@ -519,6 +519,11 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
     info, T, z0 = _read(src); cell = info["node_size"] / 256.0
     z = continent_heights(image, high, low, sea)
     set_heights(dst, z)
+    import terrain                                   # the old map's texture layers would still draw where its rivers and rocks were
+    Tc = terrain.Terrain(os.path.join(dst, "terrain.bin")); data = Tc.load()
+    data["index_maps"] = [np.zeros_like(np.asarray(m)) for m in data["index_maps"]]
+    blob = terrain.build(data)
+    with open(os.path.join(dst, "terrain.bin"), "wb") as f: f.write(blob)
     types, land = continent_types(z, cell, k, high, forest, seed)
     flags = {int(t): 0xFFFFFF93 for t in LAND_TYPES.values()}
     nm = navmesh.NavMesh.from_height_field(z + 0.47, cell, land, k, regions=types, region_flags=flags)
@@ -536,7 +541,9 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
         for c in list(el.elements("game_entity")):
             nm_ = c.get("name") or ""; pf = c.get("old_prefab_name") or ""
             if nm_ in idset: continue
-            if DECOR.match(nm_) or DECOR.match(pf): el.remove(c); n_ += 1; continue
+            comps = c.find("components")                # ground decals outside a settlement's model belong to the old ground
+            has_decal = comps is not None and any(True for _ in comps.iter("decal_component"))
+            if DECOR.match(nm_) or DECOR.match(pf) or has_decal: el.remove(c); n_ += 1; continue
             ch = c.find("children")
             if ch is not None: n_ += prune(ch)
         return n_
