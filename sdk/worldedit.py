@@ -525,7 +525,11 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
     nm.save(os.path.join(dst, "navmesh.bin"))
     # the scene: the old geography's decoration out (at any depth, but not inside a settlement's model), settlement models onto land
     import re as re_
-    ids = re_.findall(r'<Settlement\s[^>]*?id="([^"]+)"', open(os.path.join(config_modules(), "SandBox", "ModuleData", "settlements.xml"), encoding="utf-8").read(), re_.S)
+    tags = re_.findall(r'<Settlement\s[^>]*?>', open(os.path.join(config_modules(), "SandBox", "ModuleData", "settlements.xml"), encoding="utf-8").read(), re_.S)
+    num = lambda t_, k_: (lambda r: float(r.group(1)) if r else None)(re_.search(r'\s%s="([-0-9.]+)"' % k_, t_))
+    ids = [re_.search(r'\sid="([^"]+)"', t_).group(1) for t_ in tags]
+    # posX/posY and gate_posX/gate_posY per settlement: the patch moves them by the same shift as the model
+    xml_pts = {s: [(num(t_, "posX"), num(t_, "posY")), (num(t_, "gate_posX"), num(t_, "gate_posY"))] for s, t_ in zip(ids, tags)}
     doc = scene.load(os.path.join(dst, "scene.xscene")); idset = set(ids)
     def prune(el):
         n_ = 0
@@ -537,18 +541,26 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
             if ch is not None: n_ += prune(ch)
         return n_
     removed = prune(doc.entities_element())
-    n = types.shape[0]; lj, li = np.nonzero(land & (types != LAND_TYPES["Snow"]))
+    n = types.shape[0]; step = k * cell; lj, li = np.nonzero(land & (types != LAND_TYPES["Snow"]))
     lx, ly = (li + 0.5) * step, (lj + 0.5) * step
-    occupied = np.zeros(len(lx), bool); changes = {}; moved = 0; spots = []
+    def on_land(x, y):
+        j, i = int(y // step), int(x // step)
+        return bool(0 <= j < n and 0 <= i < n and land[j, i] and types[j, i] != LAND_TYPES["Snow"])
+    occupied = np.zeros(len(lx), bool); changes = {}; moved = 0; stuck = 0; spots = []
     for sid in ids:
         try: ent, pos = settlement_entity(doc, sid)
         except ValueError: continue
-        j, i = int(pos[1] // step), int(pos[0] // step)
-        ok = 0 <= j < n and 0 <= i < n and land[j, i] and types[j, i] != LAND_TYPES["Snow"]
+        # The model, posX/posY and the gate must all lie on the navmesh (the land cells). The campaign looks the gate's face up
+        # (GetFaceIndex, -1 off the mesh) and the engine's path finding indexes its face table with it unchecked: a gate off the
+        # mesh crashes the settlement distance cache (bl2_re JOURNAL 2026-10-14 "map navmesh crash").
+        offs = [(0.0, 0.0)] + [(x - pos[0], y - pos[1]) for x, y in xml_pts.get(sid, []) if x is not None and y is not None]
+        fits = lambda x, y: all(on_land(x + dx, y + dy) for dx, dy in offs)
+        ok = fits(pos[0], pos[1])
         if ok: nx_, ny_ = pos[0], pos[1]
         else:
-            d2 = (lx - pos[0]) ** 2 + (ly - pos[1]) ** 2 + occupied * 1e9; q = int(np.argmin(d2)); occupied[q] = True
-            nx_, ny_ = lx[q], ly[q]; moved += 1
+            d2 = (lx - pos[0]) ** 2 + (ly - pos[1]) ** 2 + occupied * 1e9; order = np.argsort(d2)
+            q = next((int(c) for c in order if not occupied[c] and fits(lx[c], ly[c])), int(order[0])); occupied[q] = True
+            nx_, ny_ = lx[q], ly[q]; moved += 1; stuck += not fits(nx_, ny_)
         lift = pos[2] - float(z0[int(round(pos[1] / cell)), int(round(pos[0] / cell))])
         nz = float(z[int(round(ny_ / cell)), int(round(nx_ / cell))]) + max(lift, 0.0)
         ent.position = tuple(np.asarray(ent.position, np.float64) + np.array([nx_, ny_, nz]) - pos)
@@ -574,7 +586,7 @@ def continent(project, image, high=23.0, low=-0.723, sea=0.3, forest=0.35, seed=
             names.append(nm_); recs.append(r)
     flora.write(dst, dict(names=names, rec=np.array(recs, flora.REC) if recs else np.zeros(0, flora.REC)))
     return {"continent": dst, "land_share": round(float(land.mean()), 3), "navmesh_faces": len(nm.faces), "trees": len(names),
-            "decoration_removed": removed, "settlements_moved_onto_land": moved, "height_range": [round(float(z.min()), 3), round(float(z.max()), 3)]}, changes
+            "decoration_removed": removed, "settlements_moved_onto_land": moved, "settlements_off_navmesh": stuck, "height_range": [round(float(z.min()), 3), round(float(z.max()), 3)]}, changes
 
 
 def config_modules():
