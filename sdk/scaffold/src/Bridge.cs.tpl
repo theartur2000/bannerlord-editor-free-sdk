@@ -67,6 +67,11 @@ namespace __MOD__
 
         static string Dir => Path.Combine(SubModule.ModulePath, "bridge");
 
+        // SandBox.dll is loaded only with the Sandbox module (campaigns), not in a Custom Battle: a SandBox type named in the
+        // command switch would make the whole switch fail to compile there. Such code lives in its own method, compiled on first call.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static Scene CampaignMapScene() => ((SandBox.MapScene)TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper).Scene;
+
         public static void Tick(float dt)
         {
             if (!_checked)
@@ -345,7 +350,7 @@ namespace __MOD__
                     if (sid < 0) throw new Exception("the engine has no sound event " + ev + " (is the bank listed in soundfiles.xml and the event in the module's sound_event_data.xml, both named by project.mbproj?)");
                     for (int i = Playing.Count - 1; i >= 0; i--) if (!Playing[i].IsValid || !Playing[i].IsPlaying()) { Playing[i].Release(); Playing.RemoveAt(i); }
                     Scene sc = m != null ? m.Scene : null;
-                    if (sc == null && TaleWorlds.CampaignSystem.Campaign.Current != null) sc = ((SandBox.MapScene)TaleWorlds.CampaignSystem.Campaign.Current.MapSceneWrapper).Scene;
+                    if (sc == null && TaleWorlds.CampaignSystem.Campaign.Current != null) sc = CampaignMapScene();
                     bool at = a.ContainsKey("x") || a.ContainsKey("y");
                     SoundEvent se = SoundEvent.CreateEventFromString(ev, sc);
                     if (at)

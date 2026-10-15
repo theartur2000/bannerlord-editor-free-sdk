@@ -929,6 +929,15 @@ def sound_build_with_fmod_studio():
     assert run("sound.info", "--decode", "3")["ok"]
 
 
+@test
+def bridge_switch_names_no_sandbox_type():
+    # SandBox.dll exists only with the Sandbox module: a SandBox type in the command switch breaks every command in a Custom Battle
+    t = open(os.path.join(ROOT, "sdk", "scaffold", "src", "Bridge.cs.tpl"), encoding="utf-8").read()
+    switch = t[t.index("switch ("):]
+    lines = [l for l in switch.splitlines() if "SandBox." in l and not l.strip().startswith("//")]
+    assert not lines, lines
+
+
 def uuid_bytes(s):
     import uuid
     return uuid.UUID(s).bytes_le

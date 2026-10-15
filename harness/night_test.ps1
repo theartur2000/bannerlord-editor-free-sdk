@@ -12,7 +12,7 @@
 #          is expected to stop by itself when Bannerlord.exe is gone (not included here; um video / ffmpeg do this well).
 # -DryRun: harness self-check without the game (stub launcher, autostart file untouched in the game folder); ends in "fail".
 param([Parameter(Mandatory = $true)][string]$Module, [Parameter(Mandatory = $true)][string]$Words,
-      [string]$Suite = "test", [string]$Tag = "", [int]$TimeoutSec = 420, [switch]$Campaign, [switch]$Story, [switch]$NoRetry,
+      [string]$Suite = "test", [string]$Tag = "", [int]$TimeoutSec = 420, [switch]$Campaign, [switch]$Story, [switch]$SoundEngine, [switch]$NoRetry,
       [string]$Record = "", [switch]$DryRun, [string]$LogFile = "", [string]$EndMarker = "AUTOTEST_DONE",
       [string]$AutostartFile = "", [string]$OutDir = "", [string]$ModulesBefore = "", [string]$ModuleOrder = "")
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -30,7 +30,7 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 $runScript = Join-Path $here "run_bannerlord_test.ps1"
 if ($DryRun) {
     $AutostartFile = Join-Path $nd "autostart_dry.txt"; $Record = ""; $runScript = Join-Path $nd "stub_run.ps1"
-    [IO.File]::WriteAllText($runScript, "param([string]`$Module, [string]`$Tag, [int]`$TimeoutSec, [switch]`$Campaign, [switch]`$Story, [string]`$LogFile, [string]`$EndMarker, [string]`$OutDir, [string]`$ModulesBefore, [string]`$ModuleOrder)`r`n""stub run `$Tag campaign=`$Campaign""`r`n""saves untouched: True""`r`nexit 0`r`n", $utf8)
+    [IO.File]::WriteAllText($runScript, "param([string]`$Module, [string]`$Tag, [int]`$TimeoutSec, [switch]`$Campaign, [switch]`$Story, [switch]`$SoundEngine, [string]`$LogFile, [string]`$EndMarker, [string]`$OutDir, [string]`$ModulesBefore, [string]`$ModuleOrder)`r`n""stub run `$Tag campaign=`$Campaign""`r`n""saves untouched: True""`r`nexit 0`r`n", $utf8)
 }
 $hadAuto = Test-Path $AutostartFile
 $oldAuto = if ($hadAuto) { [IO.File]::ReadAllBytes($AutostartFile) } else { $null }
@@ -50,6 +50,7 @@ function Run-Attempt([int]$n) {
     if ($LogFile) { $runArgs += " -LogFile `"$LogFile`"" }
     if ($Campaign) { $runArgs += " -Campaign" }
     if ($Story) { $runArgs += " -Story" }
+    if ($SoundEngine) { $runArgs += " -SoundEngine" }
     if ($ModulesBefore) { $runArgs += " -ModulesBefore $ModulesBefore" }
     if ($ModuleOrder) { $runArgs += " -ModuleOrder $ModuleOrder" }
     $p = Start-Process powershell.exe -ArgumentList $runArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput "$ad\run.txt" -RedirectStandardError "$ad\run_err.txt"

@@ -1163,7 +1163,7 @@ def live_enable(a):
 
 @command("run", "One unattended test run in the game: writes the test words, starts the game silently, waits for the end marker, collects the log.",
          [P("words", help='the test words the module understands, for example "scene=my_map tod=12 fight secs=30 quit"', required=True),
-          P("launch", "bool", "really start the game (without it, and without --dry, nothing happens)"), P("campaign", "bool", "add the Sandbox module"),
+          P("launch", "bool", "really start the game (without it, and without --dry, nothing happens)"), P("campaign", "bool", "add the Sandbox module"), P("sound_engine", "bool", "keep the sound engine on (every volume at 0): banks load and events play, silently"),
           P("timeout", "int", default=420), P("tag", help="the name of the result folder under <SDK home>\\out"), P("log_file", help="the module's log (default: <module>\\<id>_log.txt)"),
           P("module_name", help="the module id (default: the project's)"),
           P("module_order", help="the whole module list in load order, '*'-separated, for example Native*SandBoxCore*MyMod*Sandbox*CustomBattle")], writes=True, launches=True)
@@ -1178,6 +1178,7 @@ def run_(a):
     ps = ["powershell", "-ExecutionPolicy", "Bypass", "-File", os.path.join(os.path.dirname(HERE), "harness", "night_test.ps1"), "-Module", mod, "-Words", a["words"],
           "-LogFile", log, "-Tag", tag, "-TimeoutSec", str(int(a.get("timeout") or 420)), "-NoRetry"]
     if a.get("campaign"): ps.append("-Campaign")
+    if a.get("sound_engine"): ps.append("-SoundEngine")
     if a.get("module_order"):
         if mod not in a["module_order"].split("*"): raise BlError("--module_order must name the module under test (%s)" % mod)
         ps += ["-ModuleOrder", a["module_order"]]
